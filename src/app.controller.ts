@@ -13,6 +13,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import * as pdfParse from 'pdf-parse';
 import { response } from 'express';
+import * as path from 'path';
 
 @Controller()
 export class AppController {
@@ -50,7 +51,7 @@ export class AppController {
     let projects: any = [];
     for (const file of files) {
       const data = await pdfParse(file.buffer);
-      projects.push({ text: data.text });
+      projects.push({ text: data.text, name: file.originalname });
     }
     const response = await this.appService.analyzeText(projects);
     return response;

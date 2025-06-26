@@ -45,31 +45,54 @@ export class AppService {
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const contents: any = projects.map((project) => ({
         role: 'user',
-        parts: [project],
+        parts: [{text: ` ชื่อไฟล์: ${project.name}\n${project.text}\n==============================`}],
       }));
-      // contents.unshift({
-      //   role: 'user',
-      //   parts: [
-      //     {
-      //       text: `Score each of the following text out of 100 based on quality, coherence, and depth. give me the array of result in json form. (text_name, quality_score, coherence_score, depth_score, overall_score,  field is required.)`,
-      //     },
-      //   ],
-      // });
       contents.unshift({
         role: 'user',
         parts: [
           {
-            text: `
-          จงให้คะแนนแต่ละข้อความ เต็ม 100 คะแนน โดยใช้เกณฑ์ 5 ข้อต่อไปนี้ 
-
-          ${first}
-          ${seccond}
-          ${third}
-          ${fourth}
-          ${fifth}
-
-          ให้คะแนนแต่ละข้อความ แล้วเก็บคะแนนในรูปแบบ json (array of object) โดยมี field ดังนี้ text_name, first_score, seccond_score, third_score, fourth_score, fifth_score, overall_score and overall_reason
-          `,
+            text: `คุณคือผู้เชี่ยวชาญในการประเมินผลงาน ให้คะแนนแต่ละโครงการจากรายการโครงการที่ได้รับ\n
+              โดยให้คะแนนเต็ม 100 คะแนน โดยใช้เกณฑ์ 5 ข้อต่อไปนี้ \n
+              ${first}\n
+              ${seccond}\n
+              ${third}\n
+              ${fourth}\n
+              ${fifth}\n
+              โปรดตอบกลับ **เฉพาะในรูปแบบ JSON เป็นอาร์เรย์ของอ็อบเจ็กต์ที่มีจำนวนเท่ากับชื่อไฟล์**\n
+              โดยแต่ละอ็อบเจ็กต์ต้องมีฟิลด์ดังนี้\n
+              - text_name: ชื่อของไฟล์\n
+              - first_score: คะแนนสำหรับมิติที่ 1\n
+              - seccond_score: คะแนนสำหรับมิติที่ 2\n
+              - third_score: คะแนนสำหรับมิติที่ 3\n
+              - fourth_score: คะแนนสำหรับมิติที่ 4\n
+              - fifth_score: คะแนนสำหรับมิติที่ 5\n
+              - overall_scoreซ คะแนนรวม เต็ม 100 (จำนวนเต็ม)\n
+              - overall_reason: สรุปสั้นๆ ประมาณ 1-2 บรรทัด\n
+              แต่ละโครงการจะถูกคั่นด้วยตัวอักษร "=============================="\n
+              ตัวอย่างผลลัพธ์ที่ต้องการ:\n
+              [
+                {
+                  "text_name": "โครงการส่งเสริมการอ่านในโรงเรียนชนบท",
+                  "first_score": 18,
+                  "seccond_score": 15,
+                  "third_score": 20,
+                  "fourth_score": 17,
+                  "fifth_score": 19,
+                  "overall_score": 89,
+                  "overall_reason": "โครงการมีความชัดเจน ครอบคลุม และมีการดำเนินงานที่เป็นรูปธรรม เหมาะสมกับกลุ่มเป้าหมาย"
+                },
+                {
+                  "text_name": "โครงการลดขยะพลาสติกในชุมชนเมือง",
+                  "first_score": 14,
+                  "seccond_score": 13,
+                  "third_score": 16,
+                  "fourth_score": 15,
+                  "fifth_score": 14,
+                  "overall_score": 72,
+                  "overall_reason": "แนวคิดโครงการดีและมีเป้าหมายที่สำคัญ แต่ขาดรายละเอียดและการวางแผนในเชิงปฏิบัติ"
+                }
+              ]
+              *จุดเริ่มต้น*\n`,
           },
         ],
       });
@@ -90,6 +113,7 @@ export class AppService {
       }
     } catch (error) {
       console.log(error);
+      throw Error(error)
     }
   }
 }
