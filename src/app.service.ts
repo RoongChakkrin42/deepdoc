@@ -32,9 +32,14 @@ export class AppService {
   async register(username: string, password: string) {
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await this.userRepository.findOne(username);
-    if (user) return HttpStatus.BAD_REQUEST;
-    const result = await this.userRepository.create(username, hashedPassword);
-    if (result) return HttpStatus.CREATED;
+    if (user) {
+      console.log("error")
+      return HttpStatus.BAD_REQUEST;
+    } else {
+      console.log("pass")
+      const result = await this.userRepository.create(username, hashedPassword);
+      if (result) return HttpStatus.CREATED;
+    }
     return HttpStatus.BAD_REQUEST;
   }
 
@@ -45,7 +50,11 @@ export class AppService {
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const contents: any = projects.map((project) => ({
         role: 'user',
-        parts: [{text: ` ชื่อไฟล์: ${project.name}\n${project.text}\n==============================`}],
+        parts: [
+          {
+            text: ` ชื่อไฟล์: ${project.name}\n${project.text}\n==============================`,
+          },
+        ],
       }));
       contents.unshift({
         role: 'user',
@@ -109,11 +118,11 @@ export class AppService {
         const resultData = JSON.parse(jsonString);
         return resultData;
       } else {
-        throw Error('match not found')
+        throw Error('match not found');
       }
     } catch (error) {
       console.log(error);
-      throw Error(error)
+      throw Error(error);
     }
   }
 }

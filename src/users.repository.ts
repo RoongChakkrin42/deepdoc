@@ -9,7 +9,7 @@ export class UserRepository {
   constructor(@InjectModel('User') private userModel: Model<User>) {}
 
   async findOne(username: string) {
-    return this.userModel.findOne({ username });
+    return this.userModel.findOne({ "username": username });
   }
 
   async create(username: string, hashedPassword: string): Promise<User> {

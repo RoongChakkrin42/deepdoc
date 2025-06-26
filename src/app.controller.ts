@@ -31,7 +31,7 @@ export class AppController {
       req.body.username,
       req.body.password,
     );
-    return { statusCode: response };
+    return response;
   }
 
   @UseGuards(AuthGuard('jwt'))
