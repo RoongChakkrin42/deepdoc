@@ -12,13 +12,11 @@ import { AuthConsumer } from 'src/comsume.schema';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import * as pdfParse from 'pdf-parse';
-
+import { response } from 'express';
 
 @Controller()
 export class AppController {
-  constructor(
-    private readonly appService: AppService
-  ) {}
+  constructor(private readonly appService: AppService) {}
 
   @UseGuards(AuthGuard('local'))
   @Post('login')
@@ -49,10 +47,12 @@ export class AppController {
     }),
   )
   async analyze(@UploadedFiles() files: Express.Multer.File[]) {
+    let projects: any = [];
     for (const file of files) {
       const data = await pdfParse(file.buffer);
-      console.log(data.text); // extracted text
+      projects.push({ text: data.text });
     }
-    return { message: 'Files processed in memory' };
+    const response = await this.appService.analyzeText(projects);
+    return response;
   }
 }
