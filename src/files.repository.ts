@@ -10,7 +10,7 @@ export class FileRepository {
 
   async create(meta: {
     key: string;
-    signedUrl: string;
+    url: string;
     filename: string;
     mimetype: string;
     size: number;

@@ -59,7 +59,7 @@ export class AppController {
     return response;
   }
 
-  @Post()
+  @Post('uploadFiles')
   @UseInterceptors(
     FilesInterceptor('files', 6, {
       storage: multer.memoryStorage(),
@@ -84,7 +84,8 @@ export class AppController {
       );
       return { status: HttpStatus.ACCEPTED, ...uploadResults };
     } catch (error) {
-      return HttpStatus.BAD_REQUEST;
+      console.log(error)
+      return {status: HttpStatus.BAD_REQUEST, error: error};
     }
   }
 }

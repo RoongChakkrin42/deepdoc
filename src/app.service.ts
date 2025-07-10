@@ -12,7 +12,6 @@ import {
 import { FileRepository } from './files.repository';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-
 @Injectable()
 export class AppService {
   private s3: S3Client;
@@ -148,7 +147,7 @@ export class AppService {
 
   async uploadFile(filename: string, buffer: Buffer, mimetype: string) {
     try {
-      const key = `uploads/${Date.now()}-${filename}`;
+      const key = `${Date.now()}-${filename}`;
       // upload to S3
       const putCommand = new PutObjectCommand({
         Bucket: this.bucket,
@@ -156,24 +155,23 @@ export class AppService {
         Body: buffer,
         ContentType: mimetype,
       });
-      await this.s3.send(putCommand);
+      await this.s3.send(putCommand).then(() => console.log(key+" uploaded."));
       // save in DB
-      const getCommand = new GetObjectCommand({
+const getCommand = new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      const signedUrl = await getSignedUrl(this.s3, getCommand, {
-        expiresIn: 7200,
-      });
+      const url = await getSignedUrl(this.s3, getCommand);
       await this.fileRepository.create({
         key,
-        signedUrl,
+        url,
         filename,
         mimetype,
         size: buffer.length,
-      })
-      return { filename, message: 'Upload successful.' }
+      }).then(() => console.log(key+" url saved."));
+      return { filename, message: 'Upload successful.' };
     } catch (error) {
+      console.log(error);
       return { filename, message: 'Upload failed.' };
     }
   }
