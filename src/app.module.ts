@@ -11,6 +11,7 @@ import { UserRepository } from './users.repository';
 import { ConfigModule } from '@nestjs/config';
 import { MulterModule } from '@nestjs/platform-express';
 import { UploadedFile, UploadedFileSchema } from './file.schema';
+import { FileRepository } from './files.repository';
 
 @Module({
   imports: [
@@ -18,7 +19,7 @@ import { UploadedFile, UploadedFileSchema } from './file.schema';
     MongooseModule.forRoot(process.env.DATABASEURL!),
     MongooseModule.forFeature([
       { name: 'User', schema: UserSchema },
-      { name: 'User', schema: UploadedFileSchema },
+      { name: 'File', schema: UploadedFileSchema },
     ]),
     PassportModule,
     JwtModule.register({
@@ -35,7 +36,7 @@ import { UploadedFile, UploadedFileSchema } from './file.schema';
     LocalStrategy,
     JwtStrategy,
     UserRepository,
-    UploadedFile,
+    FileRepository
   ],
 })
 export class AppModule {}

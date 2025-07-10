@@ -1,15 +1,19 @@
-// file.schema.ts
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { Schema, Document } from 'mongoose';
 
-@Schema()
-export class UploadedFile extends Document {
-  @Prop({ required: true }) key: string;
-  @Prop() signedUrl: string;
-  @Prop() filename: string;
-  @Prop() mimetype: string;
-  @Prop() size: number;
-  @Prop({ default: Date.now }) uploadedAt: Date;
+export interface UploadedFile extends Document {
+  key: string;
+  url: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  uploadedAt: Date;
 }
 
-export const UploadedFileSchema = SchemaFactory.createForClass(UploadedFile);
+export const UploadedFileSchema = new Schema<UploadedFile>({
+  key: { type: String, required: true },
+  url: { type: String, required: true },
+  filename: { type: String, required: true },
+  mimetype: { type: String, required: true },
+  size: { type: Number, required: true },
+  uploadedAt: { type: Date, default: Date.now },
+});
