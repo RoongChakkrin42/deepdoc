@@ -155,20 +155,24 @@ export class AppService {
         Body: buffer,
         ContentType: mimetype,
       });
-      await this.s3.send(putCommand).then(() => console.log(key+" uploaded."));
+      await this.s3
+        .send(putCommand)
+        .then(() => console.log(key + ' uploaded.'));
       // save in DB
-const getCommand = new GetObjectCommand({
+      const getCommand = new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
       const url = await getSignedUrl(this.s3, getCommand);
-      await this.fileRepository.create({
-        key,
-        url,
-        filename,
-        mimetype,
-        size: buffer.length,
-      }).then(() => console.log(key+" url saved."));
+      await this.fileRepository
+        .create({
+          key,
+          url,
+          filename,
+          mimetype,
+          size: buffer.length,
+        })
+        .then(() => console.log(key + ' url saved.'));
       return { filename, message: 'Upload successful.' };
     } catch (error) {
       console.log(error);
