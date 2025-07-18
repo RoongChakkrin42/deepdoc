@@ -43,7 +43,8 @@ export class AppService {
   async login(user: any) {
     const payload = { username: user.username };
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token: this.jwtService.sign(payload, { expiresIn: '2h' }),
+      refresh_token: this.jwtService.sign(payload, { expiresIn: '1d' }),
     };
   }
 
@@ -61,23 +62,23 @@ export class AppService {
     return HttpStatus.BAD_REQUEST;
   }
 
-  async analyzeText(projects: any[], user: any) {
+  async analyzeText(project: any) {
     try {
       const genAI = new GoogleGenerativeAI(process.env.APIKEY!);
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      const contents: any = projects.map((project) => ({
+      const contents: any = {
         role: 'user',
         parts: [
           {
             text: ` ชื่อไฟล์: ${project.name}\n${project.text}\n==============================`,
           },
         ],
-      }));
+      };
       contents.unshift({
         role: 'user',
         parts: [
           {
-            text: `คุณคือผู้เชี่ยวชาญในการประเมินผลงาน ให้คะแนนแต่ละโครงการจากรายการโครงการที่ได้รับ\n
+            text: `คุณคือผู้เชี่ยวชาญในการประเมินผลงาน ให้คะแนนโครงการที่ได้รับ\n
               โดยให้คะแนนเต็ม 100 คะแนน โดยใช้เกณฑ์ 5 ข้อต่อไปนี้ \n
               ${first}\n
               ${seccond}\n
@@ -114,7 +115,7 @@ export class AppService {
                 fourth_reson: "โครงการมีกิจกรรมสร้างความตระหนักด้านความเสี่ยง แต่ขาดการยกย่องความพยายามด้านการบริหารความเสี่ยง"
                 fifth_score: 19,
                 fifth_reson: "โครงการมีบทเรียนที่ได้รับและแนวปฏิบัติที่ดี แต่ไม่มีการปรับปรุงกระบวนการบริหารความเสี่ยง"
-                overall_score 89,
+                overall_score: 89,
                 overall_reason: "โครงการมีความชัดเจน ครอบคลุม และมีการดำเนินงานที่เป็นรูปธรรม เหมาะสมกับกลุ่มเป้าหมาย"
                 project_summary: "**บทสรุปอธิบายภาพรวมของโครงการ ประมาณ 1 หน้า**"
               }
@@ -134,8 +135,7 @@ export class AppService {
       if (match) {
         const jsonString = match[0];
         const resultData = JSON.parse(jsonString);
-        const refreshToken = await this.login(user);
-        return { ...resultData, ...refreshToken };
+        return { ...resultData };
       } else {
         throw Error('match not found');
       }
@@ -145,38 +145,74 @@ export class AppService {
     }
   }
 
-  async uploadFile(filename: string, buffer: Buffer, mimetype: string) {
+  async uploadFile(
+    file: any,
+    id: string,
+  ) {
     try {
-      const key = `${Date.now()}-${filename}`;
-      // upload to S3
-      const putCommand = new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: buffer,
-        ContentType: mimetype,
-      });
-      await this.s3
-        .send(putCommand)
-        .then(() => console.log(key + ' uploaded.'));
-      // save in DB
-      const getCommand = new GetObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-      });
-      const url = await getSignedUrl(this.s3, getCommand);
-      await this.fileRepository
-        .create({
+      if (file.fieldName == 'project') {
+        const key = `${file.filename}-${Date.now()}`;
+        // upload to S3
+        const putCommand = new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        });
+        await this.s3.send(putCommand);
+        // save in DB
+        // const getCommand = new GetObjectCommand({
+        //   Bucket: this.bucket,
+        //   Key: key,
+        // });
+        //   const signedUrl = await getSignedUrl(this.s3, getCommand, {
+        //   expiresIn: 7200,
+        // });
+        const result = await this.analyzeText(file)
+        return await this.fileRepository.create({
           key,
-          url,
-          filename,
-          mimetype,
-          size: buffer.length,
-        })
-        .then(() => console.log(key + ' url saved.'));
-      return { filename, message: 'Upload successful.' };
+          filename: file.filename,
+          mimetype: file.mimetype,
+          size: file.buffer.length,
+          result: result
+        });
+      } else {
+        const key = `${file.filename}-${Date.now()}`;
+        // upload to S3
+        const putCommand = new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        });
+        await this.s3.send(putCommand);
+        // const getCommand = new GetObjectCommand({
+        //   Bucket: this.bucket,
+        //   Key: key,
+        // });
+        //   const signedUrl = await getSignedUrl(this.s3, getCommand, {
+        //   expiresIn: 7200,
+        // });
+        // update DB
+        await this.fileRepository.updateOne(
+          {
+            key,
+            filename: file.filename,
+            mimetype: file.mimetype,
+            size: file.buffer.length,
+          },
+          id,
+        );
+      }
+      return;
     } catch (error) {
       console.log(error);
-      return { filename, message: 'Upload failed.' };
+      return error;
     }
+  }
+
+  async resultlist(year: any) {
+    console.log(year)
+    return await this.fileRepository.findMany(year);
   }
 }
