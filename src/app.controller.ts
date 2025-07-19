@@ -108,31 +108,21 @@ export class AppController {
       },
     ),
   )
-  async uploadFiles(@UploadedFiles() files) {
+  async uploadFiles(@UploadedFiles() files, @Request() req: any) {
     try {
+      const dataJSON = await JSON.parse(req.body.data)
       const createdProject = await this.appService.uploadFile(
         files.project[0],
         '',
+        dataJSON,
       );
       for (let i = 0; i < evidencenumber.length; i++) {
         const evidenceFiles = files[evidencenumber[i].name];
-        for (let i = 0 ; i < evidenceFiles.length ; i++) {
-          const element = evidenceFiles[i];
-          await this.appService.uploadFile(
-            element,
-            createdProject._id,
-          );
+        for (let j = 0; j < evidenceFiles.length; j++) {
+          const element = evidenceFiles[j];
+          await this.appService.uploadFile(element, createdProject._id, {});
         }
       }
-      // const uploadResults = await Promise.all(
-      //   files.evidences11.map((file) =>
-      //     this.appService.uploadFile(
-      //       file.originalname,
-      //       file.buffer,
-      //       file.mimetype,
-      //     ),
-      //   ),
-      // );
       return { status: HttpStatus.CREATED };
     } catch (error) {
       console.log(error);

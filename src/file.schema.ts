@@ -7,21 +7,30 @@ export interface UploadedProject extends Document {
   size: number;
   uploadedAt: Date;
   evidence: UploadedFile[];
-  result: Result[];
+  result: Result;
+  studentData: StudentData;
+  url: string;
+}
+
+export interface StudentData extends Document {
+  name: string;
+  department: string;
+  email: string;
+  phone: string;
 }
 
 export interface Result extends Document {
   file_name: string;
   first_score: number;
-  first_reson: string;
+  first_reason: string;
   second_score: number;
-  second_reson: string;
+  second_reason: string;
   third_score: number;
-  third_reson: string;
+  third_reason: string;
   fourth_score: number;
-  fourth_reson: string;
+  fourth_reason: string;
   fifth_score: number;
-  fifth_reson: string;
+  fifth_reason: string;
   overall_score: number;
   overall_reason: string;
   project_summary: string;
@@ -32,7 +41,9 @@ export interface UploadedFile extends Document {
   filename: string;
   mimetype: string;
   size: number;
+  fileGroup: string;
   uploadedAt: Date;
+  url: string;
 }
 
 export const UploadedFileSchema = new Schema<UploadedProject>({
@@ -40,6 +51,14 @@ export const UploadedFileSchema = new Schema<UploadedProject>({
   filename: { type: String, required: true },
   mimetype: { type: String, required: true },
   size: { type: Number, required: true },
-  uploadedAt: { type: Date, default: Date.now },
-  evidence: { type: [Schema.Types.ObjectId], ref: 'UploadedFile', default: [] },
+  uploadedAt: { type: Date, default: Date.now, required: true },
+  evidence: {
+    type: [Schema.Types.Mixed],
+    ref: 'UploadedFile',
+    default: [],
+    required: true,
+  },
+  result: { type: Schema.Types.Mixed, ref: 'Result', required: true },
+  studentData: { type: Schema.Types.Mixed, required: true },
+  url: { type: String, required: false },
 });
