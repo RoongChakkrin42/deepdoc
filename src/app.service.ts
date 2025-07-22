@@ -64,8 +64,9 @@ export class AppService {
     return HttpStatus.BAD_REQUEST;
   }
 
-  async analyzeText(file: Express.Multer.File) {
+  async analyzeText(file: Express.Multer.File, id: any) {
     try {
+      this.logger.log('analyzing...');
       const data = await pdfParse(file.buffer);
       const genAI = new GoogleGenerativeAI(process.env.APIKEY!);
       const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -140,7 +141,9 @@ export class AppService {
       if (match) {
         const jsonString = match[0];
         const resultData = JSON.parse(jsonString);
-        return { ...resultData };
+        this.fileRepository.updateOneResult(resultData, id)
+        this.logger.log('Result updated.');
+        // return { ...resultData };
       } else {
         throw Error('match not found');
       }
@@ -196,18 +199,17 @@ export class AppService {
         // upload to S3 using helper method
         await this.uploadToS3(key, file.buffer, file.mimetype);
         // save in DB
-        this.logger.log('analyzing...');
-        const result = await this.analyzeText(file);
         this.logger.log('Creating database infomation...');
         const created = await this.fileRepository.create({
           key: key,
           filename: file.originalname,
           mimetype: file.mimetype,
           size: file.buffer.length,
-          result: result,
+          result: null,
           studentData: data,
         });
         this.logger.log(`Created document with ID: ${created._id}`);
+        this.analyzeText(file, created._id);
         return created;
       } else {
         this.logger.log(`Uploading ${file.fieldname}...`);
@@ -215,7 +217,7 @@ export class AppService {
         // upload to S3 using helper method
         await this.uploadToS3(key, file.buffer, file.mimetype);
         // update DB
-        await this.fileRepository.updateOne(
+        await this.fileRepository.updateOneEvidence(
           {
             key: key,
             filename: file.originalname,
