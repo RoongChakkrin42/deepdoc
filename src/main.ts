@@ -11,7 +11,7 @@ async function bootstrap() {
     credentials: true,               // ✅ if using cookies or auth headers
   });
   await app
-    .listen(process.env.PORT ?? 3000)
-    .then(() => console.log('App listening at port ', process.env.PORT || 3000));
+    .listen(process.env.PORT ?? 8000)
+    .then(() => console.log('App listening at port ', process.env.PORT || 8000));
 }
 bootstrap();
