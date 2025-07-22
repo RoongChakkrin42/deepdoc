@@ -209,7 +209,6 @@ export class AppService {
           studentData: data,
         });
         this.logger.log(`Created document with ID: ${created._id}`);
-        this.logger.log('analyzing...');
         this.analyzeText(file, created._id);
         return created;
       } else {
