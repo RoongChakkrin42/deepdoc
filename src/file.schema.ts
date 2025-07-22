@@ -58,7 +58,7 @@ export const UploadedFileSchema = new Schema<UploadedProject>({
     default: [],
     required: true,
   },
-  result: { type: Schema.Types.Mixed, ref: 'Result', required: true },
+  result: { type: Schema.Types.Mixed, ref: 'Result', required: false },
   studentData: { type: Schema.Types.Mixed, required: true },
   url: { type: String, required: false },
 });
