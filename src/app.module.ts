@@ -15,7 +15,7 @@ import { FileRepository } from './files.repository';
 
 @Module({
   imports: [
-    ConfigModule.forRoot(),
+    ConfigModule.forRoot({ isGlobal: true }),
     MongooseModule.forRoot(process.env.DATABASEURL!),
     MongooseModule.forFeature([
       { name: 'User', schema: UserSchema },
