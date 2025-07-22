@@ -7,7 +7,7 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.useStaticAssets(join(__dirname, '..', 'uploads'));
   app.enableCors({
-    origin: 'http://localhost:3000', // ✅ allow frontend
+    origin: ['http://localhost:3000', "https://deepdoc-client.vercel.app/"], // ✅ allow frontend
     credentials: true,               // ✅ if using cookies or auth headers
   });
   await app
