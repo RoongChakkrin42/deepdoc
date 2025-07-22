@@ -39,13 +39,24 @@ export class FileRepository {
     filename: string;
     mimetype: string;
     size: number;
-    result: Result;
+    result: any;
     studentData: any;
   }) {
     return await this.fileModel.create(data);
   }
 
-  async updateOne(
+  async updateOneResult(
+    data: any,
+    project: string,
+  ) {
+    return await this.fileModel.findByIdAndUpdate(
+      project,
+      { result: data  },
+      { new: true } 
+    );
+  }
+
+  async updateOneEvidence(
     data: {
       key: string;
       filename: string;
