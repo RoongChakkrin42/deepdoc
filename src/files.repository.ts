@@ -10,7 +10,7 @@ export class FileRepository {
   constructor(@InjectModel('File') private fileModel: Model<UploadedProject>) {}
 
   async findOne(project: string) {
-    return await this.fileModel.findOne({_id: project});
+    return await this.fileModel.findOne({ _id: project });
   }
 
   // async findExistingOne(email: string) {
@@ -26,12 +26,15 @@ export class FileRepository {
   async findMany(data: any) {
     const startDate = new Date(`${data.year}-01-01T00:00:00.000Z`);
     const endDate = new Date(`${data.year}-12-31T23:59:59.999Z`);
-    return await this.fileModel.find({
-      uploadedAt: {
-        $gte: startDate,
-        $lte: endDate
-      }
-    });
+    return await this.fileModel
+      .find({
+        uploadedAt: {
+          $gte: startDate,
+          $lte: endDate,
+        },
+        'result.first_score': { $exists: true },
+      })
+      .sort({ 'result.overall_score': -1 });
   }
 
   async create(data: {
@@ -45,14 +48,11 @@ export class FileRepository {
     return await this.fileModel.create(data);
   }
 
-  async updateOneResult(
-    data: any,
-    project: string,
-  ) {
+  async updateOneResult(data: any, project: string) {
     return await this.fileModel.findByIdAndUpdate(
       project,
-      { result: data  },
-      { new: true } 
+      { result: data },
+      { new: true },
     );
   }
 
@@ -73,15 +73,14 @@ export class FileRepository {
       mimetype: data.mimetype,
       size: data.size,
       fileGroup: data.fileGroup,
-      uploadedAt: new Date()
+      uploadedAt: new Date(),
     };
-    
+
     // Add the evidence directly (schema will handle the conversion)
     return await this.fileModel.findByIdAndUpdate(
-      project, 
+      project,
       { $push: { evidence: evidenceData } },
-      { new: true } // equivalent to returnDocument: 'after'
+      { new: true }, // equivalent to returnDocument: 'after'
     );
   }
-
 }
