@@ -106,7 +106,7 @@ export class AppService {
               - fifth_reason: เหตุผลในการให้คะแนนสำหรับมิติที่ 5\n
               - overall_score คะแนนรวม เต็ม 100 (จำนวนเต็ม)\n
               - overall_reason: สรุปการให้คะแนนสั้นๆ ประมาณ 1-2 บรรทัด\n
-              - project_summary: บทอธิบายสรุปภาพรวมของโครงการ ประมาณ 1 หน้า
+              - project_summary: บทอธิบายสรุปภาพรวมของโครงการ ประมาณ 1 หน้า ในรูปแบบ Markdown\n
 
               ตัวอย่างผลลัพธ์ที่ต้องการ:\n
               {
@@ -124,9 +124,7 @@ export class AppService {
                 overall_score: 89,
                 overall_reason: "โครงการมีความชัดเจน ครอบคลุม และมีการดำเนินงานที่เป็นรูปธรรม เหมาะสมกับกลุ่มเป้าหมาย"
                 project_summary: "**บทสรุปอธิบายภาพรวมของโครงการ ประมาณ 1 หน้า**"
-              }
-
-              *จุดเริ่มต้นโครงการ*\n`,
+              }`,
           },
         ],
       });
@@ -141,7 +139,7 @@ export class AppService {
       if (match) {
         const jsonString = match[0];
         const resultData = JSON.parse(jsonString);
-        this.fileRepository.updateOneResult(resultData, id)
+        this.fileRepository.updateOneResult(resultData, id);
         this.logger.log('Result updated.');
         // return { ...resultData };
       } else {
@@ -249,18 +247,24 @@ export class AppService {
         { expiresIn: 21600 },
       );
       project['url'] = signedUrl1;
-      for (let j = 0; j < project.evidence.length; j++) {
-        let evidence = project.evidence[j];
-        const signedUrl2 = await getSignedUrl(
-          this.s3,
-          new GetObjectCommand({
-            Bucket: this.bucket,
-            Key: evidence.key,
-          }),
-          { expiresIn: 21600 },
-        );
-        evidence['url'] = signedUrl2;
+
+      if (project.evidence.length > 0) {
+        for (let j = 0; j < project.evidence.length; j++) {
+          let evidence = project.evidence[j];
+          const signedUrl2 = await getSignedUrl(
+            this.s3,
+            new GetObjectCommand({
+              Bucket: this.bucket,
+              Key: evidence.key,
+            }),
+            { expiresIn: 21600 },
+          );
+          evidence['url'] = signedUrl2;
+        }
+      } else {
+        project.evidence = [];
       }
+
       returnData.push(project);
     }
     return returnData;
