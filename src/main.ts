@@ -1,17 +1,34 @@
+import { Logger, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { NestExpressApplication } from '@nestjs/platform-express';
-import { join } from 'path';
+import { EnvironmentVariables } from './common/config/env.validation';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  app.useStaticAssets(join(__dirname, '..', 'uploads'));
+  const app = await NestFactory.create(AppModule);
+  const config = app.get(ConfigService<EnvironmentVariables, true>);
+  const logger = new Logger('Bootstrap');
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: false },
+    }),
+  );
+
+  // Allowed browser origins come from CORS_ORIGINS rather than a hardcoded list.
   app.enableCors({
-    origin: ['http://localhost:3000', "https://deepdoc-client.vercel.app"], // ✅ allow frontend
-    credentials: true,               // ✅ if using cookies or auth headers
+    origin: config.get('CORS_ORIGINS', { infer: true }),
+    credentials: true,
   });
-  await app
-    .listen(process.env.PORT ?? 8000)
-    .then(() => console.log('App listening at port ', process.env.PORT || 8000));
+
+  app.enableShutdownHooks();
+
+  const port = config.get('PORT', { infer: true });
+  await app.listen(port);
+  logger.log(`DeepDoc API listening on http://localhost:${port}`);
 }
-bootstrap();
+
+void bootstrap();

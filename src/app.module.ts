@@ -1,42 +1,42 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
-import { LocalStrategy } from './strategies/local.strategy';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { UserSchema } from './user.schema';
-import { UserRepository } from './users.repository';
-import { ConfigModule } from '@nestjs/config';
-import { MulterModule } from '@nestjs/platform-express';
-import { UploadedFile, UploadedFileSchema } from './file.schema';
-import { FileRepository } from './files.repository';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AnalysisModule } from './analysis/analysis.module';
+import { AuthModule } from './auth/auth.module';
+import {
+  EnvironmentVariables,
+  validateEnv,
+} from './common/config/env.validation';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { StorageModule } from './storage/storage.module';
+import { SubmissionsModule } from './submissions/submissions.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    MongooseModule.forRoot(process.env.DATABASEURL!),
-    MongooseModule.forFeature([
-      { name: 'User', schema: UserSchema },
-      { name: 'File', schema: UploadedFileSchema },
-    ]),
-    PassportModule,
-    JwtModule.register({
-      secret: process.env.JWTSECRET,
-      signOptions: { expiresIn: '2h' },
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validate: validateEnv,
+      cache: true,
     }),
-    MulterModule.register({
-      dest: './uploads',
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<EnvironmentVariables, true>) => ({
+        uri: config.get('MONGODB_URI', { infer: true }),
+      }),
     }),
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 60 }]),
+    UsersModule,
+    AuthModule,
+    StorageModule,
+    AnalysisModule,
+    SubmissionsModule,
   ],
-  controllers: [AppController],
   providers: [
-    AppService,
-    LocalStrategy,
-    JwtStrategy,
-    UserRepository,
-    FileRepository
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
 export class AppModule {}
