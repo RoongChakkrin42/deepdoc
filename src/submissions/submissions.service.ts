@@ -8,10 +8,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { AnalysisService } from '../analysis/analysis.service';
 import {
-  EVIDENCE_FIELDS,
+  AWARD_TIERS,
+  LEVEL_IDS_DESCENDING,
+  levelById,
+  MAX_TOTAL_SCORE,
   PROJECT_FIELD,
   RUBRIC,
-  RUBRIC_CRITERIA,
 } from '../analysis/rubric/rubric';
 import { EnvironmentVariables } from '../common/config/env.validation';
 import { StorageService } from '../storage/storage.service';
@@ -25,7 +27,7 @@ import { SubmissionsRepository } from './submissions.repository';
 
 export type UploadedFiles = Record<string, Express.Multer.File[] | undefined>;
 
-/** Shape returned to the client — presigned URLs are added, keys are not exposed. */
+/** Shape returned to the client — a presigned URL is added, the key is not exposed. */
 export interface SubmissionView {
   id: string;
   submitter: CreateSubmissionDto;
@@ -34,12 +36,6 @@ export interface SubmissionView {
   attempts: number;
   failureReason: string | null;
   report: { filename: string; url: string };
-  evidence: {
-    criterionCode: string | null;
-    criterionTitle: string | null;
-    filename: string;
-    url: string;
-  }[];
   analysis: SubmissionDocument['analysis'];
 }
 
@@ -76,20 +72,41 @@ export class SubmissionsService implements OnApplicationBootstrap {
     }
   }
 
-  /** The form definition the client renders from — keeps the rubric in one place. */
+  /**
+   * What the client renders: one upload field plus the rubric it will be graded
+   * against. The rubric travels with the form so a submitter can see, before
+   * uploading, exactly which fifteen things the report has to cover — it is a
+   * single document now, and nothing else prompts them to include all of it.
+   */
   getFormSchema() {
     return {
       projectField: PROJECT_FIELD,
-      maxTotalScore: RUBRIC.reduce((sum, d) => sum + d.weight, 0),
+      maxTotalScore: MAX_TOTAL_SCORE,
+      levels: LEVEL_IDS_DESCENDING.map((id) => {
+        const level = levelById(id)!;
+        return {
+          id: level.id,
+          label: level.label,
+          english: level.english,
+          band: level.band,
+        };
+      }),
+      awardTiers: AWARD_TIERS.map((tier) => ({
+        id: tier.id,
+        label: tier.label,
+        minScore: tier.minScore,
+        description: tier.description,
+      })),
       dimensions: RUBRIC.map((dimension) => ({
         index: dimension.index,
         title: dimension.title,
+        focus: dimension.focus,
         weight: dimension.weight,
         criteria: dimension.criteria.map((criterion) => ({
           code: criterion.code,
-          field: criterion.field,
           title: criterion.title,
           evidenceRequirement: criterion.evidenceRequirement,
+          checks: [...criterion.checks],
         })),
       })),
     };
@@ -101,11 +118,11 @@ export class SubmissionsService implements OnApplicationBootstrap {
   ): Promise<{ id: string; status: AnalysisStatus }> {
     const report = files[PROJECT_FIELD]?.[0];
     if (!report) {
-      throw new BadRequestException('กรุณาแนบไฟล์สรุปโครงการ (PDF)');
+      throw new BadRequestException('กรุณาแนบไฟล์รายงาน (PDF)');
     }
 
-    // Upload the report and every evidence file before creating the document,
-    // so a submission never exists pointing at objects that failed to store.
+    // Upload before creating the document, so a submission never exists
+    // pointing at an object that failed to store.
     const reportFile: StoredFile = {
       key: await this.storage.upload(report.buffer, report.mimetype),
       filename: report.originalname,
@@ -113,28 +130,14 @@ export class SubmissionsService implements OnApplicationBootstrap {
       size: report.size,
     };
 
-    const evidence: StoredFile[] = [];
-    for (const criterion of RUBRIC_CRITERIA) {
-      for (const file of files[criterion.field] ?? []) {
-        evidence.push({
-          key: await this.storage.upload(file.buffer, file.mimetype),
-          filename: file.originalname,
-          mimetype: file.mimetype,
-          size: file.size,
-          criterionCode: criterion.code,
-        });
-      }
-    }
-
     const submission = await this.repository.create({
       submitter: dto,
       report: reportFile,
-      evidence,
       status: AnalysisStatus.Pending,
     });
 
     this.logger.log(
-      `Stored submission ${String(submission._id)} ("${dto.projectName}") with ${evidence.length} evidence file(s)`,
+      `Stored submission ${String(submission._id)} ("${dto.projectName}")`,
     );
 
     // Deliberately not awaited: grading takes tens of seconds and the browser
@@ -186,18 +189,11 @@ export class SubmissionsService implements OnApplicationBootstrap {
             filename: submission.report.filename,
             buffer: await this.storage.download(submission.report.key),
           },
-          evidence: await Promise.all(
-            submission.evidence.map(async (file) => ({
-              criterionCode: file.criterionCode ?? '',
-              filename: file.filename,
-              buffer: await this.storage.download(file.key),
-            })),
-          ),
         });
 
         await this.repository.saveResult(id, outcome);
         this.logger.log(
-          `Submission ${id} scored ${outcome.overallScore}/100 on attempt ${attempt}`,
+          `Submission ${id} scored ${outcome.overallScore}/${MAX_TOTAL_SCORE} (${outcome.award.label}) on attempt ${attempt}`,
         );
         return;
       } catch (error) {
@@ -220,10 +216,6 @@ export class SubmissionsService implements OnApplicationBootstrap {
   }
 
   private async toView(doc: SubmissionDocument): Promise<SubmissionView> {
-    const titleByCode = new Map(
-      RUBRIC_CRITERIA.map((criterion) => [criterion.code, criterion.title]),
-    );
-
     return {
       id: String(doc._id),
       submitter: doc.submitter,
@@ -235,16 +227,6 @@ export class SubmissionsService implements OnApplicationBootstrap {
         filename: doc.report.filename,
         url: await this.storage.getDownloadUrl(doc.report.key),
       },
-      evidence: await Promise.all(
-        doc.evidence.map(async (file) => ({
-          criterionCode: file.criterionCode ?? null,
-          criterionTitle: file.criterionCode
-            ? (titleByCode.get(file.criterionCode) ?? null)
-            : null,
-          filename: file.filename,
-          url: await this.storage.getDownloadUrl(file.key),
-        })),
-      ),
       analysis: doc.analysis,
     };
   }
@@ -254,8 +236,9 @@ export class SubmissionsService implements OnApplicationBootstrap {
   }
 }
 
-/** Field definitions handed to multer — derived, never hand-maintained. */
-export const UPLOAD_FIELDS = [
-  { name: PROJECT_FIELD, maxCount: 1 },
-  ...EVIDENCE_FIELDS.map((name) => ({ name, maxCount: 5 })),
-];
+/**
+ * Field definitions handed to multer. A submission is one report PDF: the
+ * earlier fifteen per-criterion evidence fields asked a submitter to split
+ * their work into an upload matrix nobody actually files it in.
+ */
+export const UPLOAD_FIELDS = [{ name: PROJECT_FIELD, maxCount: 1 }];

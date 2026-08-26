@@ -21,7 +21,6 @@ describe('mongoose schemas', () => {
   it.each([
     'submitter',
     'report',
-    'evidence',
     'status',
     'analysis',
     'failureReason',

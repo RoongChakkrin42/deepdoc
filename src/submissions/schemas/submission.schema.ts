@@ -25,12 +25,42 @@ export class StoredFile {
 
   @Prop({ required: true })
   size: number;
-
-  /** Rubric criterion this file was uploaded as evidence for, e.g. `2.3`. */
-  @Prop()
-  criterionCode?: string;
 }
 export const StoredFileSchema = SchemaFactory.createForClass(StoredFile);
+
+@Schema({ _id: false })
+export class CriterionScore {
+  /** Rubric criterion code, e.g. `2.3`. */
+  @Prop({ required: true })
+  code: string;
+
+  @Prop({ required: true })
+  title: string;
+
+  /** One of the five official maturity levels, e.g. `mature`. */
+  @Prop({ required: true })
+  level: string;
+
+  @Prop({ required: true })
+  levelLabel: string;
+
+  /** Representative points for the level, 0-100. */
+  @Prop({ required: true })
+  score: number;
+
+  /** Text the model quoted out of the report to support the level. */
+  @Prop({ type: [String], default: [] })
+  evidenceFound: string[];
+
+  /** Rubric checks the model could not find in the report. */
+  @Prop({ type: [String], default: [] })
+  missing: string[];
+
+  @Prop({ required: true })
+  comment: string;
+}
+export const CriterionScoreSchema =
+  SchemaFactory.createForClass(CriterionScore);
 
 @Schema({ _id: false })
 export class DimensionScore {
@@ -40,17 +70,43 @@ export class DimensionScore {
   @Prop({ required: true })
   title: string;
 
+  /** Percentage weight of this dimension in the total. */
+  @Prop({ required: true })
+  weight: number;
+
+  /** Mean of the dimension's criterion scores, 0-100. */
   @Prop({ required: true })
   score: number;
 
+  /** Points this dimension contributes to the total, i.e. `score * weight / 100`. */
   @Prop({ required: true })
-  maxScore: number;
+  weightedScore: number;
 
   @Prop({ required: true })
-  comment: string;
+  level: string;
+
+  @Prop({ required: true })
+  levelLabel: string;
+
+  @Prop({ type: [CriterionScoreSchema], default: [] })
+  criteria: CriterionScore[];
 }
 export const DimensionScoreSchema =
   SchemaFactory.createForClass(DimensionScore);
+
+/** The award tier the total falls into, resolved server-side from the rubric. */
+@Schema({ _id: false })
+export class AwardTier {
+  @Prop({ required: true })
+  id: string;
+
+  @Prop({ required: true })
+  label: string;
+
+  @Prop({ required: true })
+  description: string;
+}
+export const AwardTierSchema = SchemaFactory.createForClass(AwardTier);
 
 @Schema({ _id: false })
 export class AnalysisResult {
@@ -58,11 +114,15 @@ export class AnalysisResult {
   @Prop({ required: true })
   summary: string;
 
+  /** Weighted total, 0-100. May carry decimals — the dimensions are averages. */
   @Prop({ required: true })
   overallScore: number;
 
   @Prop({ required: true })
   overallComment: string;
+
+  @Prop({ type: AwardTierSchema, required: true })
+  award: AwardTier;
 
   @Prop({ type: [DimensionScoreSchema], default: [] })
   dimensions: DimensionScore[];
@@ -75,8 +135,9 @@ export class AnalysisResult {
   analyzedAt: Date;
 
   /**
-   * Caveats about the run itself — evidence dropped for payload size, scores
-   * clamped into range. Shown to the reviewer so nothing is silently lost.
+   * Caveats about the run itself — a level awarded without a supporting quote,
+   * a criterion the model answered twice. Shown to the reviewer so nothing is
+   * silently lost.
    */
   @Prop({ type: [String], default: [] })
   notes: string[];
@@ -108,13 +169,9 @@ export class Submission {
   @Prop({ type: SubmitterSchema, required: true })
   submitter: Submitter;
 
-  /** The project report PDF. */
+  /** The report PDF. It is the only file a submission carries. */
   @Prop({ type: StoredFileSchema, required: true })
   report: StoredFile;
-
-  /** Supporting evidence PDFs, tagged with the criterion they belong to. */
-  @Prop({ type: [StoredFileSchema], default: [] })
-  evidence: StoredFile[];
 
   @Prop({
     type: String,

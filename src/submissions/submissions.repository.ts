@@ -13,7 +13,6 @@ import {
 export interface CreateSubmissionData {
   submitter: Submitter;
   report: StoredFile;
-  evidence: StoredFile[];
   status: AnalysisStatus;
 }
 

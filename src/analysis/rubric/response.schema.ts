@@ -1,5 +1,7 @@
 import { Schema, Type } from '@google/genai';
-import { RUBRIC } from './rubric';
+import { LEVEL_IDS_DESCENDING, RUBRIC_CRITERIA } from './rubric';
+
+const CRITERION_CODES = RUBRIC_CRITERIA.map((criterion) => criterion.code);
 
 /**
  * The JSON shape Gemini is constrained to via `responseSchema`.
@@ -9,9 +11,12 @@ import { RUBRIC } from './rubric';
  * wrapped the object in prose or emitted a trailing comma. Structured output
  * makes the shape a contract enforced by the API instead.
  *
- * Note what is *not* requested: the overall score. Summing the five dimension
- * scores is arithmetic, and the server does it — models get it wrong often
- * enough that a total which disagrees with its own parts is a real failure mode.
+ * Note what is *not* requested: any number at all. The model picks one of five
+ * named maturity levels per criterion; the server turns levels into points,
+ * averages them per dimension, applies the official weights and derives the
+ * award tier. Models get arithmetic wrong often enough that a total which
+ * disagrees with its own parts is a real failure mode — and a free-form score
+ * is also the single largest source of run-to-run drift.
  */
 export const ANALYSIS_RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
@@ -19,47 +24,84 @@ export const ANALYSIS_RESPONSE_SCHEMA: Schema = {
     summary: {
       type: Type.STRING,
       description:
-        'บทสรุปภาพรวมของโครงการความยาวประมาณ 1 หน้า ในรูปแบบ Markdown ภาษาไทย',
+        'บทสรุปภาพรวมของผลงานความยาวประมาณ 1 หน้า ในรูปแบบ Markdown ภาษาไทย ครอบคลุมจุดแข็งและจุดที่ต้องพัฒนา',
     },
-    overallComment: {
-      type: Type.STRING,
-      description: 'สรุปเหตุผลการให้คะแนนโดยรวม ความยาว 1-2 ประโยค ภาษาไทย',
-    },
-    dimensions: {
+    criteria: {
       type: Type.ARRAY,
-      description: `ผลการประเมินครบทั้ง ${RUBRIC.length} มิติ เรียงตามลำดับมิติที่ 1 ถึง ${RUBRIC.length}`,
-      minItems: String(RUBRIC.length),
-      maxItems: String(RUBRIC.length),
+      description: `ผลการประเมินครบทั้ง ${CRITERION_CODES.length} เกณฑ์ย่อย เรียงตามลำดับ ${CRITERION_CODES.join(', ')}`,
+      minItems: String(CRITERION_CODES.length),
+      maxItems: String(CRITERION_CODES.length),
       items: {
         type: Type.OBJECT,
         properties: {
-          index: {
-            type: Type.INTEGER,
-            description: `หมายเลขมิติ (1-${RUBRIC.length})`,
+          code: {
+            type: Type.STRING,
+            format: 'enum',
+            enum: [...CRITERION_CODES],
+            description: 'รหัสเกณฑ์ย่อย เช่น 1.2',
           },
-          score: {
-            type: Type.INTEGER,
+          evidenceFound: {
+            type: Type.ARRAY,
             description:
-              'คะแนนที่ได้ในมิตินี้ ต้องไม่เกินคะแนนเต็มของมิติตามที่ระบุในเกณฑ์',
+              'ข้อความที่คัดลอกจากเอกสารซึ่งใช้เป็นหลักฐานของเกณฑ์ข้อนี้ ไม่เกิน 3 ข้อความ ถ้าไม่พบให้เป็นอาร์เรย์ว่าง',
+            maxItems: '3',
+            items: { type: Type.STRING },
           },
-          comment: {
+          missing: {
+            type: Type.ARRAY,
+            description:
+              'รายการ "สิ่งที่ต้องตรวจให้ได้" ของเกณฑ์ข้อนี้ที่ยังหาไม่พบในเอกสาร ถ้าครบทุกข้อให้เป็นอาร์เรย์ว่าง',
+            items: { type: Type.STRING },
+          },
+          level: {
+            type: Type.STRING,
+            format: 'enum',
+            enum: [...LEVEL_IDS_DESCENDING],
+            description: 'ระดับที่เลือกตามบันไดการเลือกระดับ',
+          },
+          justification: {
             type: Type.STRING,
             description:
-              'เหตุผลของคะแนน อ้างอิงหลักฐานที่พบหรือระบุหลักฐานที่ขาดไปอย่างเฉพาะเจาะจง',
+              'เหตุผลของระดับที่เลือก ระบุสิ่งที่ครบและสิ่งที่ขาดอย่างเฉพาะเจาะจง ภาษาไทย',
           },
         },
-        required: ['index', 'score', 'comment'],
-        propertyOrdering: ['index', 'score', 'comment'],
+        required: [
+          'code',
+          'evidenceFound',
+          'missing',
+          'level',
+          'justification',
+        ],
+        propertyOrdering: [
+          'code',
+          'evidenceFound',
+          'missing',
+          'level',
+          'justification',
+        ],
       },
     },
+    overallComment: {
+      type: Type.STRING,
+      description: 'สรุปเหตุผลการประเมินโดยรวม ความยาว 2-3 ประโยค ภาษาไทย',
+    },
   },
-  required: ['summary', 'overallComment', 'dimensions'],
-  propertyOrdering: ['summary', 'overallComment', 'dimensions'],
+  required: ['summary', 'criteria', 'overallComment'],
+  propertyOrdering: ['summary', 'criteria', 'overallComment'],
 };
 
-/** The raw object Gemini returns, before the server validates and totals it. */
+/** One criterion as the model returns it, before the server validates it. */
+export interface RawCriterionAssessment {
+  code: string;
+  evidenceFound: string[];
+  missing: string[];
+  level: string;
+  justification: string;
+}
+
+/** The raw object Gemini returns, before the server scores and totals it. */
 export interface RawAnalysisResponse {
   summary: string;
+  criteria: RawCriterionAssessment[];
   overallComment: string;
-  dimensions: { index: number; score: number; comment: string }[];
 }

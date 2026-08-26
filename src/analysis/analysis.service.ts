@@ -6,8 +6,15 @@ import { buildRubricPrompt, SYSTEM_INSTRUCTION } from './rubric/prompt';
 import {
   ANALYSIS_RESPONSE_SCHEMA,
   RawAnalysisResponse,
+  RawCriterionAssessment,
 } from './rubric/response.schema';
-import { RUBRIC, RUBRIC_CRITERIA } from './rubric/rubric';
+import {
+  awardTierFor,
+  levelById,
+  levelForScore,
+  RUBRIC,
+  RubricLevelId,
+} from './rubric/rubric';
 
 export interface AnalysisFile {
   filename: string;
@@ -16,22 +23,47 @@ export interface AnalysisFile {
 
 export interface AnalysisInput {
   projectName: string;
+  /** The single report PDF. It is the only evidence the grader gets. */
   report: AnalysisFile;
-  /** Evidence PDFs keyed by the rubric criterion they were uploaded for. */
-  evidence: (AnalysisFile & { criterionCode: string })[];
+}
+
+/** One rubric criterion as graded. */
+export interface CriterionScore {
+  code: string;
+  title: string;
+  level: RubricLevelId;
+  levelLabel: string;
+  /** Representative points for the chosen level, 0-100. */
+  score: number;
+  /** Text the model lifted out of the report to support the level. */
+  evidenceFound: string[];
+  /** Rubric checks the model could not find in the report. */
+  missing: string[];
+  comment: string;
+}
+
+export interface DimensionScore {
+  index: number;
+  title: string;
+  /** Percentage weight of this dimension. */
+  weight: number;
+  /** Mean of the dimension's criterion scores, 0-100. */
+  score: number;
+  /** `score` after weighting, i.e. the points this dimension adds to the total. */
+  weightedScore: number;
+  /** The published band `score` falls into. */
+  level: RubricLevelId;
+  levelLabel: string;
+  criteria: CriterionScore[];
 }
 
 export interface AnalysisOutcome {
   summary: string;
+  /** Weighted total, 0-100. */
   overallScore: number;
   overallComment: string;
-  dimensions: {
-    index: number;
-    title: string;
-    score: number;
-    maxScore: number;
-    comment: string;
-  }[];
+  award: { id: string; label: string; description: string };
+  dimensions: DimensionScore[];
   model: string;
   analyzedAt: Date;
   /** Anything the reviewer should know about how this run was assembled. */
@@ -43,6 +75,8 @@ export class AnalysisResponseError extends Error {}
 
 /** base64 inflates payloads by 4/3; the request budget applies to the encoded size. */
 const encodedSize = (bytes: number) => Math.ceil(bytes / 3) * 4;
+
+const round2 = (value: number) => Math.round(value * 100) / 100;
 
 @Injectable()
 export class AnalysisService {
@@ -61,23 +95,28 @@ export class AnalysisService {
   }
 
   /**
-   * Scores one submission.
+   * Scores one submission from its single report PDF.
    *
-   * Both the report *and* every evidence PDF go to the model as inline data.
-   * The rubric asks for documentary proof on every criterion, so grading the
-   * report alone — which is what the first version did — asks the model to
-   * judge evidence it was never shown.
+   * The model returns a maturity level per criterion and no numbers at all.
+   * Turning those levels into a score, averaging them per dimension, applying
+   * the official weights and picking the award tier all happen here, so a
+   * result can never show a total that disagrees with the parts it is made of.
    */
   async analyze(input: AnalysisInput): Promise<AnalysisOutcome> {
-    const { parts, notes } = this.buildParts(input);
+    const encoded = encodedSize(input.report.buffer.length);
+    if (encoded > this.payloadBudget) {
+      throw new Error(
+        `ไฟล์รายงาน "${input.report.filename}" ใหญ่เกินกว่าที่ส่งให้ Gemini ได้ในคำขอเดียว (${Math.round(encoded / 1024 / 1024)} MB หลังเข้ารหัส เกินเพดาน ${Math.round(this.payloadBudget / 1024 / 1024)} MB)`,
+      );
+    }
 
     this.logger.log(
-      `Analysing "${input.projectName}" with ${input.evidence.length - notes.length} evidence file(s) via ${this.model}`,
+      `Analysing "${input.projectName}" (${input.report.filename}) via ${this.model}`,
     );
 
     const response = await this.ai.models.generateContent({
       model: this.model,
-      contents: [{ role: 'user', parts }],
+      contents: [{ role: 'user', parts: this.buildParts(input) }],
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: 'application/json',
@@ -87,7 +126,8 @@ export class AnalysisService {
         // and 26 out of 100 — every dimension shifted the same direction, so
         // the model was re-picking how strictly to read the rubric, not adding
         // per-dimension noise. 0 does not make this fully deterministic, but it
-        // removes the sampling contribution. See the README's Known limitations.
+        // removes the sampling contribution; asking for a level rather than a
+        // number removes most of the rest. See the README's Known limitations.
         temperature: 0,
       },
     });
@@ -108,134 +148,152 @@ export class AnalysisService {
       );
     }
 
-    return this.normalise(raw, notes);
+    return this.score(raw);
+  }
+
+  /** Lays out the request: the rubric, then the report itself. */
+  private buildParts(input: AnalysisInput): Part[] {
+    return [
+      { text: buildRubricPrompt() },
+      {
+        text: `\n=== เอกสารที่ต้องประเมิน ===\nชื่อผลงาน: ${input.projectName}\nชื่อไฟล์: ${input.report.filename}`,
+      },
+      {
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: input.report.buffer.toString('base64'),
+        },
+      },
+    ];
   }
 
   /**
-   * Lays out the request: rubric, then the report, then evidence grouped by
-   * criterion, each PDF introduced by a text part so the model knows which
-   * criterion the bytes that follow are meant to prove.
+   * Turns the model's levels into the scored result.
+   *
+   * Every arithmetic step is here rather than in the prompt: level -> points,
+   * points -> dimension mean, mean -> weighted contribution, contributions ->
+   * total -> award tier. Each figure is rounded before the next step consumes
+   * it, so the total is exactly the sum of the numbers shown beside it.
    */
-  private buildParts(input: AnalysisInput): { parts: Part[]; notes: string[] } {
-    const parts: Part[] = [{ text: buildRubricPrompt() }];
-    const notes: string[] = [];
-
-    parts.push({
-      text: `\n=== เอกสารโครงการ ===\nชื่อโครงการ: ${input.projectName}\nชื่อไฟล์: ${input.report.filename}`,
-    });
-    parts.push(this.pdfPart(input.report.buffer));
-
-    let used = encodedSize(input.report.buffer.length);
-    const byCriterion = new Map<
-      string,
-      (AnalysisFile & { criterionCode: string })[]
-    >();
-    for (const file of input.evidence) {
-      const bucket = byCriterion.get(file.criterionCode) ?? [];
-      bucket.push(file);
-      byCriterion.set(file.criterionCode, bucket);
+  private score(raw: RawAnalysisResponse): AnalysisOutcome {
+    if (!Array.isArray(raw.criteria)) {
+      throw new AnalysisResponseError('Response has no criteria array');
     }
 
-    for (const criterion of RUBRIC_CRITERIA) {
-      const files = byCriterion.get(criterion.code) ?? [];
-
-      if (files.length === 0) {
-        parts.push({
-          text: `\n=== หลักฐานข้อ ${criterion.code} (${criterion.title}) ===\nไม่มีไฟล์หลักฐานแนบมาสำหรับข้อนี้`,
-        });
+    const notes: string[] = [];
+    const byCode = new Map<string, RawCriterionAssessment>();
+    for (const assessment of raw.criteria) {
+      const code = String(assessment?.code ?? '').trim();
+      if (!code) continue;
+      if (byCode.has(code)) {
+        notes.push(
+          `โมเดลตอบเกณฑ์ข้อ ${code} ซ้ำมากกว่าหนึ่งครั้ง ระบบใช้คำตอบแรกและละที่เหลือ`,
+        );
         continue;
       }
+      byCode.set(code, assessment);
+    }
 
-      for (const file of files) {
-        const cost = encodedSize(file.buffer.length);
-
-        if (used + cost > this.payloadBudget) {
-          // Surfaced to the reviewer rather than dropped quietly.
-          notes.push(
-            `ไฟล์หลักฐาน "${file.filename}" (ข้อ ${criterion.code}) ไม่ได้ถูกส่งให้ AI เนื่องจากคำขอเกินขนาดสูงสุดที่ Gemini รับได้`,
-          );
-          this.logger.warn(
-            `Skipped ${file.filename} for criterion ${criterion.code}: payload budget exhausted`,
-          );
-          continue;
-        }
-
-        parts.push({
-          text: `\n=== หลักฐานข้อ ${criterion.code} (${criterion.title}) ===\nชื่อไฟล์: ${file.filename}`,
-        });
-        parts.push(this.pdfPart(file.buffer));
-        used += cost;
+    const knownCodes = new Set(
+      RUBRIC.flatMap((dimension) =>
+        dimension.criteria.map((criterion) => criterion.code),
+      ),
+    );
+    for (const code of byCode.keys()) {
+      if (!knownCodes.has(code)) {
+        notes.push(`โมเดลตอบเกณฑ์ข้อ ${code} ซึ่งไม่มีอยู่ในเกณฑ์ ระบบละทิ้ง`);
       }
     }
 
-    return { parts, notes };
-  }
-
-  private pdfPart(buffer: Buffer): Part {
-    return {
-      inlineData: {
-        mimeType: 'application/pdf',
-        data: buffer.toString('base64'),
-      },
-    };
-  }
-
-  /**
-   * Validates the model's numbers against the rubric and computes the total
-   * server-side, so a submission can never show a total that disagrees with
-   * the dimension scores it is made of.
-   */
-  private normalise(
-    raw: RawAnalysisResponse,
-    notes: string[],
-  ): AnalysisOutcome {
-    if (!Array.isArray(raw.dimensions)) {
-      throw new AnalysisResponseError('Response has no dimensions array');
-    }
-
-    const scored = RUBRIC.map((dimension) => {
-      const match = raw.dimensions.find((d) => d.index === dimension.index);
-
-      if (!match) {
-        throw new AnalysisResponseError(
-          `Response is missing dimension ${dimension.index}`,
-        );
-      }
-
-      const score = Number(match.score);
-      if (!Number.isFinite(score)) {
-        throw new AnalysisResponseError(
-          `Dimension ${dimension.index} has a non-numeric score`,
-        );
-      }
-
-      const clamped = Math.min(
-        Math.max(Math.round(score), 0),
-        dimension.weight,
+    const dimensions = RUBRIC.map((dimension) => {
+      const criteria = dimension.criteria.map((criterion) =>
+        this.scoreCriterion(criterion.code, criterion.title, byCode, notes),
       );
-      if (clamped !== score) {
-        notes.push(
-          `คะแนนมิติที่ ${dimension.index} ที่โมเดลให้ (${score}) อยู่นอกช่วง 0-${dimension.weight} จึงถูกปรับเป็น ${clamped}`,
-        );
-      }
+
+      const mean =
+        criteria.reduce((sum, criterion) => sum + criterion.score, 0) /
+        criteria.length;
+      const score = round2(mean);
+      const band = levelForScore(score);
 
       return {
         index: dimension.index,
         title: dimension.title,
-        score: clamped,
-        maxScore: dimension.weight,
-        comment: String(match.comment ?? '').trim() || 'ไม่มีคำอธิบายจากโมเดล',
+        weight: dimension.weight,
+        score,
+        weightedScore: round2((score * dimension.weight) / 100),
+        level: band.id,
+        levelLabel: band.label,
+        criteria,
       };
     });
 
+    const overallScore = round2(
+      dimensions.reduce((sum, dimension) => sum + dimension.weightedScore, 0),
+    );
+    const tier = awardTierFor(overallScore);
+
     return {
       summary: String(raw.summary ?? '').trim(),
-      overallScore: scored.reduce((total, d) => total + d.score, 0),
+      overallScore,
       overallComment: String(raw.overallComment ?? '').trim(),
-      dimensions: scored,
+      award: {
+        id: tier.id,
+        label: tier.label,
+        description: tier.description,
+      },
+      dimensions,
       model: this.model,
       analyzedAt: new Date(),
       notes,
     };
   }
+
+  private scoreCriterion(
+    code: string,
+    title: string,
+    byCode: Map<string, RawCriterionAssessment>,
+    notes: string[],
+  ): CriterionScore {
+    const assessment = byCode.get(code);
+    if (!assessment) {
+      throw new AnalysisResponseError(`Response is missing criterion ${code}`);
+    }
+
+    const level = levelById(String(assessment.level ?? ''));
+    if (!level) {
+      throw new AnalysisResponseError(
+        `Criterion ${code} has an unknown level "${String(assessment.level)}"`,
+      );
+    }
+
+    const evidenceFound = toStringList(assessment.evidenceFound);
+
+    // The prompt makes "no evidence" and "inadequate" the same thing. A higher
+    // level with nothing quoted means the model scored on impression, which the
+    // reviewer should see rather than have silently folded into the total.
+    if (level.id !== 'inadequate' && evidenceFound.length === 0) {
+      notes.push(
+        `เกณฑ์ข้อ ${code} ได้ระดับ "${level.label}" แต่โมเดลไม่ได้ยกข้อความหลักฐานจากเอกสารมาประกอบ ควรตรวจสอบด้วยตนเอง`,
+      );
+    }
+
+    return {
+      code,
+      title,
+      level: level.id,
+      levelLabel: level.label,
+      score: level.score,
+      evidenceFound,
+      missing: toStringList(assessment.missing),
+      comment:
+        String(assessment.justification ?? '').trim() ||
+        'ไม่มีคำอธิบายจากโมเดล',
+    };
+  }
 }
+
+const toStringList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((entry) => String(entry ?? '').trim()).filter(Boolean)
+    : [];

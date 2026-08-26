@@ -4,7 +4,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { MulterModule } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { AnalysisModule } from '../analysis/analysis.module';
-import { EVIDENCE_FIELDS } from '../analysis/rubric/rubric';
 import { EnvironmentVariables } from '../common/config/env.validation';
 import { StorageModule } from '../storage/storage.module';
 import { Submission, SubmissionSchema } from './schemas/submission.schema';
@@ -12,8 +11,8 @@ import { SubmissionsController } from './submissions.controller';
 import { SubmissionsRepository } from './submissions.repository';
 import { SubmissionsService } from './submissions.service';
 
-/** report + up to 5 files per criterion. */
-const MAX_FILES_PER_REQUEST = 1 + EVIDENCE_FIELDS.length * 5;
+/** A submission is one report PDF and nothing else. */
+const MAX_FILES_PER_REQUEST = 1;
 
 @Module({
   imports: [

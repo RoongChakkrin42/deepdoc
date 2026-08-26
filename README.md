@@ -1,115 +1,71 @@
 # DeepDoc API
 
-A NestJS service that grades Thai-language university project reports with **Google Gemini**.
+A NestJS service that grades Thai-language risk-management reports with **Google Gemini**.
 
-A submitter uploads a project report plus supporting evidence PDFs. The service stores them in S3, sends every PDF to Gemini together with a structured rubric, and persists a per-dimension score that reviewers browse in the [web client](https://github.com/RoongChakkrin42/deepdoc_client).
+It exists for the **Chula Risk Management Excellence (RMEx) Award** — Chulalongkorn University's annual award for risk management at the faculty/unit level, judged on 5 dimensions and 15 criteria. This service does the first pass, so reviewers start from a scored, evidence-linked draft instead of a stack of PDFs.
 
-Built around a real rubric: the Chulalongkorn University integrated risk-management assessment — 5 dimensions, 15 criteria, 100 points.
+**Stack:** NestJS 11 · TypeScript · MongoDB · AWS S3 · Google Gemini · Passport JWT · Jest
 
 > 🇹🇭 [สรุปภาษาไทยอยู่ท้ายไฟล์](#สรุปภาษาไทย)
 
 ---
 
-## What this project demonstrates
+## What it does
 
-| Concern | Approach |
-| --- | --- |
-| **Multimodal input** | PDFs go to Gemini as `inlineData`, not as scraped text — the model reads tables, stamps, signatures and scanned pages |
-| **Reliable JSON** | `responseSchema` + `responseMimeType: application/json` instead of regex-scraping prose for a JSON object |
-| **Not trusting the model with arithmetic** | The overall score is summed server-side from the dimension scores; the model is never asked for a total |
-| **Bounded output** | Every dimension score is clamped to its rubric weight, and any adjustment is surfaced to the reviewer |
-| **Long-running work** | Grading takes tens of seconds, so it runs in the background behind a status machine with retries, resumable after a restart |
-| **One source of truth** | The rubric drives the upload fields, the form the client renders, the prompt, and the response schema |
+```
+submitter ──POST /submissions──▶ S3 ──▶ Mongo (pending) ──▶ 202 Accepted
+                                              │
+                                   background │ Gemini reads the PDF
+                                              ▼
+                                   level per criterion ──▶ server scores it
+                                              │
+reviewer ──GET /submissions?year=──────────── ▼ completed
+```
+
+One report PDF in; a weighted 0-100 total, an award tier, and the reasoning behind every criterion out.
 
 ---
 
-## Architecture
+## The problems it solves
 
-```
-                    ┌──────────────────────────────────────────┐
-   browser  ──POST──▶ SubmissionsController                    │
-  (public)           │   • multer, PDF-only, size-capped       │
-                     │   • ParseJsonPipe validates submitter   │
-                     └───────────────┬──────────────────────────┘
-                                     │
-                     ┌───────────────▼──────────────────────────┐
-                     │ SubmissionsService                       │
-                     │   owns the lifecycle + retries           │
-                     └───┬──────────────────┬───────────────────┘
-                         │                  │
-              ┌──────────▼──────┐   ┌───────▼─────────────────┐
-              │ StorageService  │   │ AnalysisService         │
-              │  S3 put/get     │   │  PDFs ──▶ Gemini ──▶    │
-              │  presigned URLs │   │  validated scores       │
-              └─────────────────┘   └───────┬─────────────────┘
-                                            │
-                                    ┌───────▼─────────┐
-                                    │ rubric.ts       │
-                                    │ single source   │
-                                    │ of truth        │
-                                    └─────────────────┘
-```
+### Scores swung 18 points between identical runs
 
-### Module map
+The obvious design — show the model the criteria, ask for a score out of 20 per dimension — is unusable. Three runs over one identical submission returned **43, 28, 25**. Every dimension moved the same direction each run, so the model was re-deciding how strictly to read the rubric, not adding random noise. `temperature: 0` was measured and did **not** fix it: this model reasons internally, and that reasoning varies regardless of sampling.
 
-| Path | Responsibility |
+Four changes, together:
+
+| | |
 | --- | --- |
-| `src/analysis/` | Everything Gemini. `rubric/rubric.ts` defines the criteria; `analysis.service.ts` turns PDFs into validated scores. Has **no** database or storage dependency, so it is testable with plain buffers. |
-| `src/submissions/` | Submission lifecycle: upload, status machine, retries, listing. |
-| `src/storage/` | S3 upload, download and presigned URLs. |
-| `src/auth/` | Reviewer login, JWT access/refresh pair, passport strategies. |
-| `src/users/` | Reviewer accounts. |
-| `src/common/` | Env validation, global exception filter, the multipart-JSON pipe. |
+| **Choose, don't invent** | The model picks one of the five maturity levels the official rubric publishes, instead of producing a number. The enum is generated from the rubric, so an out-of-range score is unrepresentable. |
+| **Quote before judging** | Every criterion must carry `evidenceFound` — text lifted out of the report — so a level is a reading of the document, not an impression of it. |
+| **Count what the rubric counts** | *"อย่างน้อย 2 ช่องทาง"*, *"ปีละ 2 ครั้ง"*: each countable threshold is spelled out per criterion as `checks`, so it stops being a matter of taste. |
+| **Fifteen small calls, not five big ones** | Judging per criterion means one harsh reading moves the total far less. |
 
----
+Same test, current design: **81.83, 81.83, 84.25** — spread 2.42, same award tier, 2 of 15 criteria moved.
 
-## The Gemini integration
+### The model was doing arithmetic
 
-### 1. Every PDF reaches the model
+It now returns no number at all. Scoring is server-side and rounded at each step, so the total is exactly the sum of the figures shown beside it:
 
-The rubric demands documentary proof on all 15 criteria (*"แสดงหลักฐาน : ..."*). So the request carries the report **and** each evidence file, each introduced by a text part naming the criterion it is meant to prove:
+`level → points (95/80/60/40/15, the band midpoints) → dimension mean → × weight → total → award tier`
 
-```
-[ rubric text ]
-=== เอกสารโครงการ ===  ชื่อไฟล์: report.pdf
-<inlineData: application/pdf>
-=== หลักฐานข้อ 1.1 (การสื่อสารนโยบาย…) ===  ชื่อไฟล์: policy-comms.pdf
-<inlineData: application/pdf>
-=== หลักฐานข้อ 1.2 (…) ===
-ไม่มีไฟล์หลักฐานแนบมาสำหรับข้อนี้
-…
-```
+A submission judged outstanding on all fifteen criteria totals **95, not 100** — which is what the official *"โดดเด่น = 90-100"* band means. Uniform grading at any level lands in the tier the rubric intends.
 
-Criteria with no upload are stated explicitly, so a missing document is graded as missing rather than imagined.
+### The grader was checking against a document it had never seen
 
-Gemini caps an inline request at 20 MB. `GEMINI_MAX_PAYLOAD_MB` (default 18) budgets the base64-encoded payload; anything that does not fit is skipped **and reported** in `analysis.notes`, which the client renders as a warning on the result. Nothing is dropped silently.
+Criterion 2.1 asks whether a faculty's risk register lines up with the *university's* risk framework. That framework now ships inside the prompt (`analysis/rubric/framework.ts`), so the check is against the real categories rather than the model's guess at them.
 
-**PDFs are billed as image tokens, not text.** A one-page PDF costs a few hundred prompt tokens under `IMAGE` modality — the model is genuinely looking at the page rather than reading extracted text, which is the point, but it means a submission with many evidence files is far more expensive than its byte size suggests. Budget accordingly before pointing this at a free-tier key.
+### A submission is one document, not sixteen uploads
 
-> **Model availability changes.** Models are retired for *new* API keys before they disappear from `ListModels`, so a name can appear in the model list and still 404 with `"no longer available to new users"` when you call it. If analyses start failing right after a key rotation, check the model name first — `GEMINI_MODEL` exists so this is a config change, not a code change.
+Entrants write a single report covering all five dimensions, describing their supporting material inside it. A form with one upload slot per criterion asked them to file their work into a matrix nobody uses. `POST /submissions` takes exactly one PDF, and the rubric travels to the client through `GET /submissions/form-schema` so the form can show a checklist of what the report must cover.
 
-### 2. The response shape is a contract
+### Failures used to vanish
 
-`responseSchema` (see `src/analysis/rubric/response.schema.ts`) constrains the reply to exactly five dimension objects with an integer score and a comment. The schema is generated from the rubric, so the model can never be asked for a dimension that does not exist.
+Grading takes tens of seconds, so it runs in the background behind `pending → processing → completed | failed`, with backoff retries and a recorded `failureReason`. `onApplicationBootstrap` resumes whatever a crash left mid-flight, and a failed analysis can be re-run without a re-upload. Anything odd about a run — a level awarded with nothing quoted behind it — lands in `analysis.notes` and is shown, never dropped.
 
-### 3. The server owns the numbers
+### One rubric, one file
 
-```ts
-overallScore: scored.reduce((total, d) => total + d.score, 0)
-```
-
-The model grades; it does not add up. Scores outside `0..weight` are clamped and the adjustment is recorded in `notes` rather than hidden.
-
-### 4. Failure is visible
-
-| Status | Meaning |
-| --- | --- |
-| `pending` | Files stored, queued |
-| `processing` | A Gemini call is in flight |
-| `completed` | Scored |
-| `failed` | Every attempt failed; `failureReason` says why |
-
-Attempts are retried with exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. On boot, `onApplicationBootstrap` picks up anything left in `pending`/`processing` by a crash or redeploy. Reviewers can re-run a failed analysis with `POST /submissions/:id/retry` — no re-upload needed.
+`src/analysis/rubric/rubric.ts` is the only place criteria exist. The prompt, the response schema's enums, the scoring, the award tiers and the client's form are all derived from it, and `rubric.spec.ts` fails the build if the weights stop summing to 100 or a criterion ships without a check.
 
 ---
 
@@ -117,206 +73,93 @@ Attempts are retried with exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. On 
 
 ```bash
 npm install
-cp .env.example .env      # then fill in the blanks
+cp .env.example .env      # fill in the blanks
 npm run start:dev         # http://localhost:8000
+
+# /results is behind a JWT and nothing seeds an account:
+npm run seed:reviewer -- --username reviewer --password 'a-strong-password'
 ```
 
-Requires MongoDB, an S3 bucket, and a [Gemini API key](https://aistudio.google.com/apikey). Configuration is validated at boot — a missing or malformed variable stops the process with a list of what is wrong, rather than failing hours later inside a background job.
-
-### MongoDB for local development
+Needs MongoDB, an S3 bucket, and a [Gemini API key](https://aistudio.google.com/apikey). Every variable is validated at boot, so a missing one stops the process with a list of what is wrong rather than failing hours later inside a background job.
 
 ```bash
-brew tap mongodb/brew && brew trust mongodb/brew
-brew install mongodb-community
-brew services start mongodb/brew/mongodb-community
+npm test          # jest
+npm run lint      # eslint --fix
+npm run build     # nest build → dist/
 ```
-
-Then set `MONGODB_URI=mongodb://127.0.0.1:27017/deepdoc`.
-
-#### If `brew services start` fails with `Bootstrap failed: 5: Input/output error`
-
-This is a bug in MongoDB's tap, not in your machine. Their formula declares
-
-```ruby
-service do
-  name macos: "#{plist_name}"
-end
-```
-
-with **no `run`** — it expects Homebrew to pick up the plist MongoDB ships
-inside the package. Homebrew 6 dropped that behaviour in favour of the `service`
-DSL, so it generates a launch agent with an empty `ProgramArguments`, and
-`launchd` rejects the job.
-
-The plist MongoDB ships is complete, so install that one instead:
-
-```bash
-cp /opt/homebrew/opt/mongodb-community/homebrew.mxcl.mongodb-community.plist \
-   ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/homebrew.mxcl.mongodb-community.plist
-```
-
-`brew services list` then reports it as `started`, and it restarts at login.
-To remove it: `launchctl bootout gui/$(id -u)/homebrew.mxcl.mongodb-community`.
-
-To skip the service entirely, run the daemon in the foreground — note `--fork`
-is no longer supported on macOS:
-
-```bash
-mongod --config /opt/homebrew/etc/mongod.conf
-```
-
-### Create the first reviewer account
-
-```bash
-curl -X POST http://localhost:8000/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"reviewer","password":"a-strong-password"}'
-```
-
-### Scripts
-
-```bash
-npm run start:dev    # watch mode
-npm run build        # nest build → dist/
-npm run start:prod   # node dist/main
-npm test             # jest
-npm test -- rubric   # a single suite by name pattern
-npm run test:cov     # coverage
-npm run lint         # eslint --fix
-```
-
----
-
-## Configuration
-
-| Variable | Required | Default | Notes |
-| --- | --- | --- | --- |
-| `PORT` | | `8000` | |
-| `NODE_ENV` | | `development` | |
-| `CORS_ORIGINS` | | `http://localhost:3000` | Comma-separated browser origins |
-| `MONGODB_URI` | ✅ | | |
-| `JWT_SECRET` | ✅ | | Minimum 16 chars — `openssl rand -base64 32` |
-| `JWT_ACCESS_TTL` | | `2h` | |
-| `JWT_REFRESH_TTL` | | `7d` | |
-| `GEMINI_API_KEY` | ✅ | | |
-| `GEMINI_MODEL` | | `gemini-3.6-flash` | |
-| `GEMINI_MAX_PAYLOAD_MB` | | `18` | Base64 payload ceiling, max 19 |
-| `ANALYSIS_MAX_ATTEMPTS` | | `3` | |
-| `AWS_REGION` | ✅ | | |
-| `AWS_ACCESS_KEY_ID` | ✅ | | |
-| `AWS_SECRET_ACCESS_KEY` | ✅ | | |
-| `S3_BUCKET` | ✅ | | |
-| `MAX_UPLOAD_MB` | | `10` | Per file |
 
 ---
 
 ## API
 
-All responses are JSON. Errors share one shape:
-
-```json
-{ "statusCode": 400, "message": "…", "path": "/submissions", "timestamp": "…" }
-```
-
-### Auth
+Errors share one shape: `{ statusCode, message, path, timestamp }`.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/auth/register` | — | Create a reviewer account |
-| `POST` | `/auth/login` | — | `{ access_token, refresh_token, token_type }` |
-| `POST` | `/auth/refresh` | — | Exchange a refresh token for a new pair |
+| `POST` | `/auth/register` · `/auth/login` · `/auth/refresh` | — | Account and tokens |
 | `GET` | `/auth/me` | Bearer | Verify a token is still valid |
-
-### Submissions
-
-| Method | Path | Auth | Purpose |
-| --- | --- | --- | --- |
-| `GET` | `/submissions/form-schema` | — | The rubric, for rendering the upload form |
-| `POST` | `/submissions` | — | Upload a submission → `202 { id, status }` |
-| `GET` | `/submissions?year=2026` | Bearer | All submissions for a year, best score first |
+| `GET` | `/submissions/form-schema` | — | The rubric, for rendering the form |
+| `POST` | `/submissions` | — | Upload → `202 { id, status }` |
+| `GET` | `/submissions?year=2026` | Bearer | A year's submissions, best score first |
 | `POST` | `/submissions/:id/retry` | Bearer | Re-run a failed analysis |
 
-`POST /submissions` is `multipart/form-data`. A multipart body cannot carry nested objects, so the submitter details ride along as a JSON string in `data`, read by the `JsonBody` decorator and validated by `ParseJsonPipe`:
-
-| Field | Contents |
-| --- | --- |
-| `project` | The report PDF (required, 1 file) |
-| `evidence_1_1` … `evidence_5_2` | Evidence PDFs, up to 5 per criterion |
-| `data` | JSON string: `{ name, projectName, department, email, phone }` |
-
-Field names come from `GET /submissions/form-schema` — never hardcode them.
-
-Rate limits: 60 req/min globally, 5/min on login and refresh, 3/min on register, 5/hour on submission upload.
+`POST /submissions` is `multipart/form-data`: the report PDF as `project`, and — because a multipart body cannot carry nested objects — the submitter details as a JSON string in `data`.
 
 ---
 
-## Adding or changing a rubric criterion
+## Limits and trade-offs
 
-Edit `src/analysis/rubric/rubric.ts`. That is the whole change — the upload fields, the client's form, the prompt and the response schema are all derived from it. A `rubric.spec.ts` invariant fails the build if the weights stop summing to 100.
-
----
-
-## Security notes
-
-These are deliberate choices for a demo, and each is what you would revisit before a real deployment:
-
-- **`POST /submissions` is unauthenticated.** Submitters are students without accounts. It is rate limited, PDF-only, size-capped and DTO-validated, but a production deployment wants a submission window, a CAPTCHA, or per-faculty tokens.
-- **`POST /auth/register` is open.** Fine for bootstrapping the first reviewer; put it behind an admin guard or an invite flow before shipping.
-- **Refresh tokens are stateless.** There is no server-side revocation list, so a stolen refresh token is valid until it expires.
-- **Presigned S3 URLs last 6 hours.** Anyone holding a link can read that PDF for that long, without authenticating.
-
----
-
-## Known limitations
-
-- Analyses run in-process. One instance is fine; behind a load balancer, two instances would both resume the same stuck submissions on boot. A real queue (BullMQ, SQS) is the next step.
-- **Scores are not stable across runs, and lowering the temperature does not fix it.** Re-running the analysis five times over one identical submission (`gemini-3.6-flash`):
-
-  | `temperature` | totals out of 100 | spread |
-  | --- | --- | --- |
-  | `0.2` | 46, 26 | 20 |
-  | `0` | 43, 28, 25 | 18 |
-
-  Every dimension moves the same direction on a given run, so the model is re-deciding how strictly to read the rubric rather than adding independent per-dimension noise. `temperature` is set to `0` because that is the right default for a grading task, **but it was measured and it is not the cause** — this model does internal reasoning (responses carry a `thoughtsTokenCount`), and that reasoning varies run to run regardless of the sampling temperature.
-
-  The practical consequence: **rankings within a single run are meaningful, absolute scores are not.** Do not compare this year's 72 against last year's 68, and do not treat a 46 as meaningfully different from a 43. If absolute numbers have to carry weight, grade the whole cohort in one run and report the median of several runs with its spread.
-
-  Untried ideas that would plausibly narrow it: scoring the 15 criteria individually instead of the 5 dimensions, so each number is anchored to one concrete evidence requirement; and putting explicit deduction rules in the prompt rather than leaving "how strict to be" to the model.
-
-- There is no scoring evaluation harness — no golden set, no comparison against human graders. Treat the scores as a first-pass triage aid, not a verdict.
-- Gemini's judgement of Thai administrative documents has not been formally validated.
+- **Scores still move a little** — 2.4 points over three runs of one document, which is a spot check, not an evaluation harness. Trust award tiers; ranking two neighbours by a decimal is not meaningful. There is no golden set and no comparison against human graders, so treat the output as first-pass triage.
+- **PDFs are billed as image tokens, not text.** The model genuinely looks at each page, which is the point, but a long report costs far more than its byte size suggests. Gemini caps an inline request at 20 MB and a report over the configured budget is refused with a message naming the size.
+- **`POST /submissions` and `POST /auth/register` are unauthenticated on purpose** for the demo, protected only by rate limits. Production wants a submission window, an admin guard, and an invite flow.
+- **Analyses run in-process**, and refresh tokens are stateless with no revocation list. One instance is fine; a real deployment wants a queue and a token blacklist.
 
 ---
 
 ## สรุปภาษาไทย
 
-**DeepDoc API** คือ backend (NestJS) ที่ให้ Google Gemini ช่วยตรวจและให้คะแนนรายงานโครงการ ตามเกณฑ์การประเมินการบริหารความเสี่ยงของจุฬาลงกรณ์มหาวิทยาลัย (5 มิติ 15 เกณฑ์ย่อย เต็ม 100 คะแนน)
+**DeepDoc API** คือ backend (NestJS) ที่ให้ Google Gemini ช่วยตรวจและให้คะแนนรายงานการบริหารความเสี่ยง สำหรับรางวัล **Chula RMEx Award** ของจุฬาลงกรณ์มหาวิทยาลัย ซึ่งตัดสินด้วยเกณฑ์ 5 มิติ 15 เกณฑ์ย่อย เต็ม 100 คะแนน ระบบทำหน้าที่ตรวจรอบแรก ให้กรรมการเริ่มจากผลที่มีคะแนนและหลักฐานอ้างอิงครบ แทนที่จะเริ่มจากกอง PDF
 
-**การทำงาน**
+**เทคโนโลยี:** NestJS 11 · TypeScript · MongoDB · AWS S3 · Google Gemini · JWT · Jest
 
-1. ผู้ส่งอัปโหลดไฟล์สรุปโครงการ พร้อมไฟล์หลักฐานของแต่ละเกณฑ์ (PDF)
-2. ระบบเก็บไฟล์ลง S3 แล้วตอบกลับทันทีด้วยสถานะ `pending`
-3. เบื้องหลัง ระบบส่ง **ไฟล์ PDF ทั้งหมด** (ทั้งเอกสารโครงการและหลักฐานทุกไฟล์) เข้า Gemini พร้อมเกณฑ์การให้คะแนน
-4. Gemini ตอบกลับเป็น JSON ที่ถูกบังคับรูปแบบด้วย `responseSchema`
-5. เซิร์ฟเวอร์ตรวจสอบคะแนน ปรับให้อยู่ในช่วงที่ถูกต้อง แล้ว**รวมคะแนนเอง** (ไม่ให้ AI บวกเลข)
-6. หน้าเว็บฝั่งผู้ตรวจ poll ดูสถานะจนกว่าจะประเมินเสร็จ
+**การทำงาน:** อัปโหลดรายงาน PDF ไฟล์เดียว → เก็บลง S3 → ตอบ `202 pending` ทันที → เบื้องหลังส่งเข้า Gemini พร้อมเกณฑ์ → Gemini เลือก "ระดับ" ให้ทุกเกณฑ์ย่อย → เซิร์ฟเวอร์คิดคะแนนเอง → ผู้ตรวจล็อกอินดูผลที่เรียงตามคะแนน
 
-**จุดที่แก้จากเวอร์ชันแรก**
+### ปัญหาหลักที่แก้ และวิธีแก้
 
-- เดิม AI ได้เห็นแค่เอกสารโครงการ **ไม่เคยเห็นไฟล์หลักฐานเลย** ทั้งที่ทุกเกณฑ์เขียนว่า "แสดงหลักฐาน" — ตอนนี้ส่งครบทุกไฟล์
-- เดิมใช้ `pdf-parse` ดึงแต่ข้อความ ทำให้ตาราง รูป และเอกสารสแกนหายไป — ตอนนี้ส่ง PDF ตรงเข้า Gemini
-- เดิมงมหา JSON จากคำตอบด้วย regex — ตอนนี้ใช้ structured output
-- เดิมถ้า AI พัง งานจะหายเงียบ ๆ ไม่มีใครรู้ — ตอนนี้มีสถานะ `pending/processing/completed/failed` มี retry และสั่งประเมินใหม่ได้
-- เดิมชื่อ field หลักฐานถูกเขียนซ้ำ 3 ที่ — ตอนนี้มีที่เดียวคือ `src/analysis/rubric/rubric.ts`
-- เดิมแบบฟอร์มเก็บหลักฐานไม่ครบตามเกณฑ์ (ขาดข้อ 3.2, 3.3, 4.3 และมิติที่ 5 ทั้งมิติ) — ตอนนี้ครบทั้ง 15 ข้อ
+**1. คะแนนเหวี่ยง 18 คะแนน ทั้งที่เป็นเอกสารเดียวกัน**
 
-**เริ่มใช้งาน**
+วิธีตรงไปตรงมาคือให้เกณฑ์แล้วขอตัวเลขต่อมิติ ผลคือรันเอกสารเดิม 3 รอบได้ 43, 28, 25 และทุกมิติขยับไปทางเดียวกัน แปลว่าโมเดลเปลี่ยน "ความเข้มในการอ่านเกณฑ์" ทุกรอบ ลด `temperature` เป็น 0 แล้ววัด ไม่ช่วย เพราะโมเดลคิดภายในของมันเองซึ่งแปรผันอยู่ดี แก้ 4 อย่างพร้อมกัน:
+
+- ให้**เลือก 1 ใน 5 ระดับ**ตามคำบรรยายจริงในเอกสารเกณฑ์ ไม่ให้คิดเลขเอง
+- ต้อง**คัดข้อความจริงจากเอกสาร**มาใส่ `evidenceFound` ก่อนตัดสิน ระดับที่ได้จึงมาจากการอ่าน ไม่ใช่ความรู้สึก
+- **อะไรที่นับได้ต้องนับ** — "อย่างน้อย 2 ช่องทาง", "ปีละ 2 ครั้ง" เขียนเป็นรายการ `checks` รายเกณฑ์
+- **ตัดสิน 15 ครั้งเล็ก แทน 5 ครั้งใหญ่** อ่านพลาดข้อเดียวจึงกระทบคะแนนรวมน้อยลงมาก
+
+วัดด้วยเอกสารเดิม แบบใหม่ได้ **81.83, 81.83, 84.25** เหวี่ยง 2.42 คะแนน ได้ระดับรางวัลเดียวกันทุกรอบ
+
+**2. เคยปล่อยให้ AI คิดเลข** — ตอนนี้โมเดลไม่ตอบตัวเลขสักตัว เซิร์ฟเวอร์คำนวณเองทุกขั้นและปัดเศษก่อนส่งต่อ คะแนนรวมจึงเท่ากับผลบวกของตัวเลขที่แสดงข้าง ๆ เสมอ: `ระดับ → คะแนน (95/80/60/40/15) → เฉลี่ยรายมิติ → ถ่วงน้ำหนัก → รวม → ระดับรางวัล` ได้ "โดดเด่น" ครบทุกข้อจะได้ **95 ไม่ใช่ 100** ตรงตามที่เกณฑ์เขียนว่าโดดเด่น = ช่วง 90-100
+
+**3. สั่งให้ตรวจความสอดคล้องกับกรอบมหาวิทยาลัย ทั้งที่ AI ไม่เคยเห็นกรอบนั้น** — เกณฑ์ข้อ 2.1 ต้องดูว่าความเสี่ยงของส่วนงานตรงกับกรอบระดับมหาวิทยาลัยไหม ตอนนี้ส่งกรอบไปใน prompt ด้วย การตรวจจึงเทียบกับหมวดจริง ไม่ใช่ที่โมเดลเดาเอา
+
+**4. ผลงานคือเอกสารฉบับเดียว ไม่ใช่ไฟล์ 16 ช่อง** — ผู้ส่งเขียนรายงานฉบับเดียวครอบคลุมทั้ง 5 มิติ โดยบรรยายหลักฐานไว้ข้างใน ฟอร์มที่บังคับอัปโหลดแยกรายเกณฑ์จึงไม่ตรงกับงานจริง ตอนนี้รับ PDF ไฟล์เดียว และส่งเกณฑ์ไปให้หน้าเว็บแสดงเป็น checklist ให้เช็คก่อนอัป
+
+**5. งานที่พังเคยหายเงียบ** — การตรวจใช้เวลาหลายสิบวินาที จึงทำเบื้องหลังภายใต้สถานะ `pending → processing → completed | failed` มี retry บันทึกสาเหตุเมื่อล้มเหลว และไล่ทำงานที่ค้างต่อให้เองตอนเปิดเซิร์ฟเวอร์ ส่วนความผิดปกติในรอบนั้น เช่น ให้ระดับสูงแต่ยกหลักฐานมาไม่ได้ จะขึ้นเป็นคำเตือน ไม่ตัดทิ้งเงียบ ๆ
+
+**6. เกณฑ์อยู่ที่เดียว** — `src/analysis/rubric/rubric.ts` เป็นที่เดียวที่นิยามเกณฑ์ ทั้ง prompt, response schema, การคิดคะแนน, ระดับรางวัล และฟอร์มฝั่งหน้าเว็บ ล้วนสร้างจากไฟล์นี้ แก้ที่เดียวจบ มีเทสต์กันไว้ว่าน้ำหนักต้องรวมได้ 100 เสมอ
+
+### เริ่มใช้งาน
 
 ```bash
 npm install
-cp .env.example .env      # ใส่ค่าให้ครบ
+cp .env.example .env      # ใส่ค่าให้ครบ (ต้องมี MongoDB, S3 bucket, Gemini API key)
 npm run start:dev
+
+# หน้า /results ต้องล็อกอิน และระบบไม่ได้สร้างบัญชีให้อัตโนมัติ
+npm run seed:reviewer -- --username reviewer --password 'รหัสที่ตั้งเอง'
 ```
 
-⚠️ **ชื่อตัวแปร environment เปลี่ยนหมดแล้ว** (เช่น `APIKEY` → `GEMINI_API_KEY`, `DATABASEURL` → `MONGODB_URI`) ดูรายการเต็มใน `.env.example` ระบบจะตรวจสอบค่าตั้งแต่ตอนเปิดเซิร์ฟเวอร์ ถ้าขาดตัวไหนจะบอกทันที
+### ข้อจำกัดที่ควรรู้
+
+- คะแนนยังขยับได้เล็กน้อย (~2.4 คะแนน วัดจากเอกสารเดียว 3 รอบ) ให้เชื่อ "ระดับรางวัล" มากกว่าตัวเลขทศนิยม และยังไม่มีการเทียบกับกรรมการจริง ถือเป็นตัวช่วยคัดกรองรอบแรก ไม่ใช่คำตัดสิน
+- PDF ถูกคิดค่าเป็น token รูปภาพ ไม่ใช่ข้อความ เอกสารยาวจึงแพงกว่าที่ขนาดไฟล์บอกมาก
+- `POST /submissions` และ `POST /auth/register` เปิดสาธารณะโดยตั้งใจสำหรับเดโม มีแค่ rate limit กัน ถ้าใช้จริงต้องปิดเพิ่ม
