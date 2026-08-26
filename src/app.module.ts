@@ -5,11 +5,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AnalysisModule } from './analysis/analysis.module';
 import { AuthModule } from './auth/auth.module';
-import {
-  EnvironmentVariables,
-  validateEnv,
-} from './common/config/env.validation';
+import { validateEnv } from './common/config/env.validation';
+import { mongooseOptions } from './common/config/mongoose.options';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { HealthModule } from './health/health.module';
 import { StorageModule } from './storage/storage.module';
 import { SubmissionsModule } from './submissions/submissions.module';
 import { UsersModule } from './users/users.module';
@@ -23,11 +22,10 @@ import { UsersModule } from './users/users.module';
     }),
     MongooseModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService<EnvironmentVariables, true>) => ({
-        uri: config.get('MONGODB_URI', { infer: true }),
-      }),
+      useFactory: mongooseOptions,
     }),
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 60 }]),
+    HealthModule,
     UsersModule,
     AuthModule,
     StorageModule,

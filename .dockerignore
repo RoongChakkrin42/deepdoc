@@ -1,0 +1,17 @@
+# .env carries a real GEMINI_API_KEY. The published image is public, and
+# anything copied into a layer comes back out with `docker save`.
+.env
+.env.*
+
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+.git
+.gitignore
+.github
+.DS_Store
+README*
+Dockerfile
+.dockerignore

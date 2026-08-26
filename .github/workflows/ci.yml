@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/deepdoc-api
+  # The branch that is allowed to publish. This repo's default is `master`.
+  RELEASE_BRANCH: refs/heads/master
+
+jobs:
+  test:
+    # Free for public repos, and native arm64 — the only deploy target is an
+    # Ampere A1 instance, so building anywhere else would mean emulation.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Not `npm run lint`: that script has --fix baked in for local use, and a
+      # CI job that silently rewrites the code it was asked to check is worse
+      # than no CI job.
+      - run: npx eslint "src/**/*.ts"
+      # The suite is hermetic — every spec mocks Gemini, Mongo and S3 — so it
+      # needs no services and no secrets.
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.ref == env.RELEASE_BRANCH
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # sha- is the immutable tag GitOps pins. The branch and `latest` tags
+          # are conveniences for humans; nothing automated may depend on them,
+          # because Argo diffs manifest text and an unchanged tag string means
+          # an unchanged manifest means nothing deploys.
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Runs on pull requests too, with push disabled: a Dockerfile that no
+      # longer builds should fail review, not the release.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: ${{ github.ref == env.RELEASE_BRANCH }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # mode=max caches intermediate stages, which is what keeps the deps
+          # layer warm between runs.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  bump:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04-arm
+    # Serialised against the client repo's identical job. They edit different
+    # files, so this is belt-and-braces on top of the pull --rebase below.
+    concurrency:
+      group: gitops-bump
+      cancel-in-progress: false
+    steps:
+      # GITHUB_TOKEN cannot write to another repository. GITOPS_TOKEN is a
+      # fine-grained PAT scoped to deepdoc-gitops with Contents: read+write.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deepdoc-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Install kustomize
+        run: |
+          curl -sfLo install_kustomize.sh \
+            https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh
+          bash install_kustomize.sh 5.4.3 /usr/local/bin
+
+      - name: Pin the new image
+        run: |
+          set -euo pipefail
+          TAG="sha-${GITHUB_SHA:0:7}"
+          cd manifests/api
+          # `kustomize edit` rewrites the structured images: block and is
+          # idempotent — a re-run with the same tag produces no diff.
+          kustomize edit set image "${IMAGE}=${IMAGE}:${TAG}"
+          cd -
+
+          git config user.name  "deepdoc-ci"
+          git config user.email "deepdoc-ci@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "Already pinned to ${TAG}; nothing to commit."
+            exit 0
+          fi
+
+          # [skip ci] matters: a PAT-authored push does trigger workflows,
+          # unlike one made with GITHUB_TOKEN.
+          git commit -am "api: ${TAG} [skip ci]"
+
+          for attempt in 1 2 3; do
+            if git pull --rebase && git push; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed; retrying."
+            sleep 5
+          done
+          echo "Could not push the image bump after 3 attempts." >&2
+          exit 1
