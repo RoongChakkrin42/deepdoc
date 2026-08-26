@@ -97,16 +97,27 @@ jobs:
           repository: ${{ github.repository_owner }}/deepdoc-gitops
           token: ${{ secrets.GITOPS_TOKEN }}
 
-      - name: Install kustomize
+      # The hosted runner image already ships kustomize, and its installer
+      # refuses to overwrite an existing binary rather than skipping.
+      - name: Ensure kustomize
         run: |
-          curl -sfLo install_kustomize.sh \
-            https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh
-          bash install_kustomize.sh 5.4.3 /usr/local/bin
+          if ! command -v kustomize >/dev/null 2>&1; then
+            curl -sfLo install_kustomize.sh \
+              https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh
+            bash install_kustomize.sh 5.4.3 /usr/local/bin
+          fi
+          kustomize version
 
       - name: Pin the new image
         run: |
           set -euo pipefail
           TAG="sha-${GITHUB_SHA:0:7}"
+          # github.repository_owner preserves the account's capitalisation, but
+          # registry references must be lowercase. docker/metadata-action does
+          # this for the build; here it has to be done by hand, or the pin is
+          # written under a name that does not match the manifest and kustomize
+          # silently adds a second entry instead of updating the first.
+          IMAGE="${IMAGE,,}"
           cd manifests/api
           # `kustomize edit` rewrites the structured images: block and is
           # idempotent — a re-run with the same tag produces no diff.
