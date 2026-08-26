@@ -1,9 +1,11 @@
 import { plainToInstance, Transform } from 'class-transformer';
 import {
   ArrayNotEmpty,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Max,
   Min,
@@ -29,6 +31,11 @@ const isBlank = (value: unknown) =>
 
 const toInt = (fallback: number) =>
   Transform(({ value }) => (isBlank(value) ? fallback : Number(value)));
+
+const toBool = (fallback: boolean) =>
+  Transform(({ value }): boolean =>
+    isBlank(value) ? fallback : value === true || value === 'true',
+  );
 
 const toList = (fallback: string[]) =>
   Transform(({ value }): string[] => {
@@ -96,6 +103,41 @@ export class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   S3_BUCKET: string;
+
+  /**
+   * Overrides the AWS endpoint so an S3-compatible store (MinIO, R2) can be
+   * used instead. Left unset, the SDK resolves the real AWS endpoint from
+   * `AWS_REGION` and the deployment behaves exactly as it did before.
+   *
+   * This is the address the *server* uses: in Kubernetes it is the in-cluster
+   * Service, e.g. `http://minio.deepdoc.svc.cluster.local:9000`.
+   */
+  @IsOptional()
+  @IsString()
+  S3_ENDPOINT?: string;
+
+  /**
+   * The address presigned download URLs are signed for.
+   *
+   * SigV4 signs the Host header, so a URL signed for an in-cluster hostname is
+   * both unreachable from a browser and impossible for a proxy to rewrite —
+   * changing the host invalidates the signature. Reviewers open these links
+   * directly, so presigning needs a publicly resolvable endpoint even when
+   * uploads and downloads go over the internal one.
+   *
+   * Falls back to `S3_ENDPOINT` when the two are the same.
+   */
+  @IsOptional()
+  @IsString()
+  S3_PUBLIC_ENDPOINT?: string;
+
+  /**
+   * Path-style addressing (`https://host/bucket/key`) rather than virtual-host
+   * style (`https://bucket.host/key`). Required by MinIO; leave false for AWS.
+   */
+  @toBool(false)
+  @IsBoolean()
+  S3_FORCE_PATH_STYLE = false;
 
   /** Comma-separated list of allowed browser origins. */
   @toList(['http://localhost:3000'])

@@ -59,6 +59,37 @@ describe('validateEnv', () => {
     expect(config.PORT).toBe(3001);
   });
 
+  // The S3 overrides exist so an S3-compatible store can be used, and every one
+  // of them must be optional — leaving them unset has to keep the AWS path
+  // working exactly as before.
+  it('leaves the S3 overrides unset by default', () => {
+    const config = validateEnv({ ...REQUIRED });
+    expect(config.S3_ENDPOINT).toBeUndefined();
+    expect(config.S3_PUBLIC_ENDPOINT).toBeUndefined();
+    expect(config.S3_FORCE_PATH_STYLE).toBe(false);
+  });
+
+  it('parses S3_FORCE_PATH_STYLE from the string an env var actually carries', () => {
+    expect(
+      validateEnv({ ...REQUIRED, S3_FORCE_PATH_STYLE: 'true' })
+        .S3_FORCE_PATH_STYLE,
+    ).toBe(true);
+    expect(
+      validateEnv({ ...REQUIRED, S3_FORCE_PATH_STYLE: 'false' })
+        .S3_FORCE_PATH_STYLE,
+    ).toBe(false);
+  });
+
+  it('accepts custom S3 endpoints', () => {
+    const config = validateEnv({
+      ...REQUIRED,
+      S3_ENDPOINT: 'http://minio:9000',
+      S3_PUBLIC_ENDPOINT: 'https://files.example.com',
+    });
+    expect(config.S3_ENDPOINT).toBe('http://minio:9000');
+    expect(config.S3_PUBLIC_ENDPOINT).toBe('https://files.example.com');
+  });
+
   it('rejects a payload budget above the Gemini inline limit', () => {
     expect(() =>
       validateEnv({ ...REQUIRED, GEMINI_MAX_PAYLOAD_MB: '25' }),

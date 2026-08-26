@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AnalysisService } from '../analysis/analysis.service';
@@ -41,10 +42,18 @@ export interface SubmissionView {
 
 const RETRY_BASE_DELAY_MS = 2_000;
 
+/** How long a shutdown waits for in-flight analyses before giving up on them. */
+const DRAIN_TIMEOUT_MS = 90_000;
+
 @Injectable()
-export class SubmissionsService implements OnApplicationBootstrap {
+export class SubmissionsService
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
   private readonly logger = new Logger(SubmissionsService.name);
   private readonly maxAttempts: number;
+
+  /** Background runs that have not settled yet. Drained on shutdown. */
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     private readonly repository: SubmissionsRepository,
@@ -68,8 +77,50 @@ export class SubmissionsService implements OnApplicationBootstrap {
 
     this.logger.log(`Resuming ${stuck.length} unfinished analysis run(s)`);
     for (const submission of stuck) {
-      void this.runAnalysis(String(submission._id));
+      this.track(this.runAnalysis(String(submission._id)));
     }
+  }
+
+  /**
+   * Waits for analyses already running before letting the process exit.
+   *
+   * Grading is fire-and-forget, so without this every redeploy kills whatever
+   * was mid-Gemini and strands the document in `processing`. It is recovered on
+   * the next boot — by paying for the entire analysis a second time. Waiting a
+   * minute or two is cheaper than that, and `enableShutdownHooks()` in
+   * `main.ts` is what causes this to be called at all.
+   *
+   * The timeout is the point of `Promise.race`: a run wedged on a hung request
+   * must not hold the pod past its termination grace period, or the kubelet
+   * SIGKILLs it and the drain achieves nothing.
+   */
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    if (this.inFlight.size === 0) {
+      return;
+    }
+
+    this.logger.log(
+      `${signal ?? 'Shutdown'}: draining ${this.inFlight.size} analysis run(s)`,
+    );
+
+    const drained = await Promise.race([
+      Promise.allSettled([...this.inFlight]).then(() => true),
+      this.sleep(DRAIN_TIMEOUT_MS).then(() => false),
+    ]);
+
+    if (drained) {
+      this.logger.log('All analysis runs finished');
+    } else {
+      this.logger.warn(
+        `Gave up after ${DRAIN_TIMEOUT_MS / 1000}s with ${this.inFlight.size} run(s) still going; they will be resumed on the next boot`,
+      );
+    }
+  }
+
+  /** Registers a background run so `onApplicationShutdown` can wait for it. */
+  private track(run: Promise<void>): void {
+    this.inFlight.add(run);
+    void run.finally(() => this.inFlight.delete(run));
   }
 
   /**
@@ -142,7 +193,7 @@ export class SubmissionsService implements OnApplicationBootstrap {
 
     // Deliberately not awaited: grading takes tens of seconds and the browser
     // is holding a multipart upload open. The client polls for the result.
-    void this.runAnalysis(String(submission._id));
+    this.track(this.runAnalysis(String(submission._id)));
 
     return { id: String(submission._id), status: AnalysisStatus.Pending };
   }
@@ -162,7 +213,7 @@ export class SubmissionsService implements OnApplicationBootstrap {
     }
 
     await this.repository.resetForRetry(id);
-    void this.runAnalysis(id);
+    this.track(this.runAnalysis(id));
 
     return { id, status: AnalysisStatus.Pending };
   }

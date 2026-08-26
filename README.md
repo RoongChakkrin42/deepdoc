@@ -88,6 +88,28 @@ npm run lint      # eslint --fix
 npm run build     # nest build → dist/
 ```
 
+### Running the whole stack locally
+
+`docker compose up --build` brings up MongoDB, MinIO and the API wired together
+the way the cluster wires them — including the split between the endpoint the
+server calls MinIO on and the one presigned download links are signed for, which
+is the part most likely to be wrong. Put `GEMINI_API_KEY` in `.env.compose`
+first. Run the client against it with `npm run dev` in the other repo.
+
+### Deployment
+
+Images build in GitHub Actions (`.github/workflows/ci.yml`) and publish to GHCR
+on every merge to `master`; the workflow then pins the new tag in
+[**deepdoc-gitops**](https://github.com/RoongChakkrin42/deepdoc-gitops), where
+ArgoCD picks it up and rolls it out to a k3s cluster. That repository's README
+is the deployment runbook.
+
+Two things there are consequences of code in *this* repository, and are
+explained where they are configured: the API runs a **single replica** with a
+`Recreate` strategy, because the boot-time resume of unfinished analyses has no
+locking; and the ingress must preserve the client IP, because the throttler
+keys on it.
+
 ---
 
 ## API

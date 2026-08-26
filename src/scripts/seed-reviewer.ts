@@ -1,18 +1,24 @@
 /**
  * Creates a reviewer account from the command line.
  *
- *   npm run seed:reviewer -- --username reviewer --password 'a-strong-password'
+ *   npm run seed:reviewer       -- --username reviewer --password 'a-strong-password'
+ *   npm run seed:reviewer:prod  -- --username reviewer --password 'a-strong-password'
  *
  * `POST /auth/register` can do the same thing, but it is open on purpose for
  * the demo and needs the API already running — which makes "how do I get an
  * account to look at the results?" a question with a curl command for an
- * answer. This boots only the Mongo connection and the auth stack, so it works
- * against a cold database.
+ * answer. This boots only the Mongo connection and the auth stack (see
+ * `SeedModule`), so it works against a cold database and never touches the
+ * analysis pipeline.
+ *
+ * The `:prod` variant runs the compiled `dist/` output, which is what the
+ * container image ships — `ts-node` and `tsconfig-paths` are devDependencies
+ * and are not installed there.
  */
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../app.module';
 import { AuthService } from '../auth/auth.service';
+import { SeedModule } from './seed.module';
 
 interface Args {
   username: string;
@@ -61,7 +67,7 @@ async function main(): Promise<void> {
 
   // `logger: false` keeps the Nest boot banner out of the way; the script's own
   // output is the only thing worth reading here.
-  const app = await NestFactory.createApplicationContext(AppModule, {
+  const app = await NestFactory.createApplicationContext(SeedModule, {
     logger: ['error', 'warn'],
   });
 
