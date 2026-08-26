@@ -1,4 +1,11 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "compilerOptions": {
+    // Kept inside outDir on purpose. nest-cli's `deleteOutDir` wipes dist/ but
+    // would leave a build-info file elsewhere behind, and tsc would then think
+    // the deleted output was still up to date and emit only changed files —
+    // producing a dist/ that is missing most of the app.
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
+  },
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
 }
