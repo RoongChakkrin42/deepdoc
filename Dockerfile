@@ -9,14 +9,22 @@
 # not worth arguing about.
 ARG NODE_VERSION=22-bookworm-slim
 
+# The three stages below are pinned to $BUILDPLATFORM so they run natively on
+# whatever the runner is, while the final image is still built for the target
+# architecture. This is safe here for one specific reason: nest build emits
+# plain JavaScript, and bcrypt — the only native dependency — ships every
+# platform's prebuild inside a single npm tarball, so an install performed on
+# x86-64 still contains the linux-arm64 binary that gets selected at require()
+# time. Without this, every npm ci would run under emulation.
+#
 # ---- deps: full install, including devDependencies the build needs ----------
-FROM node:${NODE_VERSION} AS deps
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
 # ---- build: nest build -> dist/ --------------------------------------------
-FROM deps AS build
+FROM --platform=$BUILDPLATFORM deps AS build
 WORKDIR /app
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
@@ -26,7 +34,7 @@ RUN npm run build
 # A separate install rather than pruning the build stage: `npm ci` starts from
 # the lockfile every time, so the result cannot depend on what the build left
 # behind.
-FROM node:${NODE_VERSION} AS prod-deps
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION} AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
