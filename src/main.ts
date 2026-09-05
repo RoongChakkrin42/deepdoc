@@ -8,14 +8,15 @@ import { EnvironmentVariables } from './common/config/env.validation';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Behind an ingress every request arrives from the proxy, so without this
-  // `req.ip` is one constant address for the entire internet — and the
-  // throttler keys on `req.ip`. The 5-uploads-per-hour and 5-logins-per-minute
-  // limits would then apply globally rather than per client, on two endpoints
-  // that are unauthenticated by design with rate limiting as their only
-  // protection. This is half the fix; the ingress must also preserve the
-  // client address (`externalTrafficPolicy: Local` on the Traefik Service).
+  // Behind an ingress every request arrives from a proxy, so without this
+  // `req.ip` is the proxy's address rather than the caller's. One hop is right
+  // for Traefik in Kubernetes; hosts that put a CDN in front add another, which
+  // is why `ProxyAwareThrottlerGuard` prefers `CF-Connecting-IP` over `req.ip`
+  // and does not depend on this number being correct everywhere.
   app.set('trust proxy', 1);
+
+  // Nothing is gained by telling every caller which framework is answering.
+  app.disable('x-powered-by');
   const config = app.get(ConfigService<EnvironmentVariables, true>);
   const logger = new Logger('Bootstrap');
 

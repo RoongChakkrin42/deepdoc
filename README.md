@@ -134,6 +134,7 @@ Errors share one shape: `{ statusCode, message, path, timestamp }`.
 - **Scores still move a little** — 2.4 points over three runs of one document, which is a spot check, not an evaluation harness. Trust award tiers; ranking two neighbours by a decimal is not meaningful. There is no golden set and no comparison against human graders, so treat the output as first-pass triage.
 - **PDFs are billed as image tokens, not text.** The model genuinely looks at each page, which is the point, but a long report costs far more than its byte size suggests. Gemini caps an inline request at 20 MB and a report over the configured budget is refused with a message naming the size.
 - **`POST /submissions` and `POST /auth/register` are unauthenticated on purpose** for the demo, protected only by rate limits. Production wants a submission window, an admin guard, and an invite flow.
+- **Rate limiting keys on the caller, not the proxy.** `ThrottlerGuard` reads `req.ip`, which Express derives from `X-Forwarded-For` using a `trust proxy` hop count that belongs to the deployment rather than the app — one hop behind Traefik, two behind a host that fronts with a CDN. Getting it wrong fails silently and hands every caller a fresh allowance. `ProxyAwareThrottlerGuard` prefers `CF-Connecting-IP`, which the CDN overwrites and a caller therefore cannot forge, and falls back to `req.ip` elsewhere.
 - **Analyses run in-process**, and refresh tokens are stateless with no revocation list. One instance is fine; a real deployment wants a queue and a token blacklist.
 
 ---
